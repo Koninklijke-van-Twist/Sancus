@@ -344,7 +344,244 @@ function project_group_posten(array $posten): array
 }
 
 /**
- * Vlakke rijen voor de tabel, met flags wanneer groepskoppen getoond moeten worden.
+ * Sommeer kosten en opbrengsten van genormaliseerde postenregels.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @return array{cost:float,revenue:float}
+ */
+function project_sum_amounts(array $lines): array
+{
+    $cost = 0.0;
+    $revenue = 0.0;
+
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $cost += (float) ($line['cost'] ?? 0);
+        $revenue += (float) ($line['revenue'] ?? 0);
+    }
+
+    return [
+        'cost' => $cost,
+        'revenue' => $revenue,
+    ];
+}
+
+/**
+ * Verzamel alle bladregels onder een type-/werkorder-/component-/details-/projectgroep.
+ *
+ * @param array<string,mixed> $node
+ * @return list<array<string,mixed>>
+ */
+function project_collect_lines(array $node): array
+{
+    if (isset($node['lines']) && is_array($node['lines'])) {
+        $lines = [];
+        foreach ($node['lines'] as $line) {
+            if (is_array($line)) {
+                $lines[] = $line;
+            }
+        }
+        return $lines;
+    }
+
+    $lines = [];
+    foreach (['types', 'workorders', 'components', 'details_groups'] as $childKey) {
+        if (!isset($node[$childKey]) || !is_array($node[$childKey])) {
+            continue;
+        }
+        foreach ($node[$childKey] as $child) {
+            if (!is_array($child)) {
+                continue;
+            }
+            foreach (project_collect_lines($child) as $line) {
+                $lines[] = $line;
+            }
+        }
+    }
+
+    return $lines;
+}
+
+/**
+ * Kinderen van een groepsnode, plus het labelveld van die node.
+ *
+ * @param array<string,mixed> $node
+ * @return array{label_key:string,child_key:?string,children:list<array<string,mixed>>}
+ */
+function project_group_node_meta(string $level, array $node): array
+{
+    switch ($level) {
+        case 'project':
+            return [
+                'label_key' => 'project_no',
+                'child_key' => 'details_groups',
+                'children' => is_array($node['details_groups'] ?? null) ? array_values($node['details_groups']) : [],
+            ];
+        case 'details':
+            return [
+                'label_key' => 'details',
+                'child_key' => 'components',
+                'children' => is_array($node['components'] ?? null) ? array_values($node['components']) : [],
+            ];
+        case 'component':
+            return [
+                'label_key' => 'component_no',
+                'child_key' => 'workorders',
+                'children' => is_array($node['workorders'] ?? null) ? array_values($node['workorders']) : [],
+            ];
+        case 'workorder':
+            return [
+                'label_key' => 'work_order_no',
+                'child_key' => 'types',
+                'children' => is_array($node['types'] ?? null) ? array_values($node['types']) : [],
+            ];
+        case 'type':
+            return [
+                'label_key' => 'type_label',
+                'child_key' => null,
+                'children' => [],
+            ];
+        default:
+            return [
+                'label_key' => '',
+                'child_key' => null,
+                'children' => [],
+            ];
+    }
+}
+
+/**
+ * Volgende groepslevel in de hiërarchie.
+ */
+function project_next_group_level(string $level): ?string
+{
+    static $order = [
+        'project' => 'details',
+        'details' => 'component',
+        'component' => 'workorder',
+        'workorder' => 'type',
+        'type' => null,
+    ];
+
+    return $order[$level] ?? null;
+}
+
+/**
+ * Flatten vanaf een groepsnode; merge aaneengesloten single-child levels op één regel.
+ *
+ * @param array<string,mixed> $node
+ * @param list<array<string,mixed>> $rows
+ */
+function project_flatten_from_node(array $node, string $startLevel, array &$rows): void
+{
+    $labels = [
+        'project_no' => '',
+        'details' => '',
+        'component_no' => '',
+        'work_order_no' => '',
+        'type_label' => '',
+    ];
+    $show = [
+        'project' => false,
+        'details' => false,
+        'component' => false,
+        'workorder' => false,
+        'type' => false,
+    ];
+
+    $current = $node;
+    $level = $startLevel;
+    $topLevel = $startLevel;
+
+    while (true) {
+        $meta = project_group_node_meta($level, $current);
+        $labelKey = (string) $meta['label_key'];
+        if ($labelKey !== '') {
+            $labels[$labelKey] = (string) ($current[$labelKey] ?? '');
+        }
+        $show[$level] = true;
+
+        $nextLevel = project_next_group_level($level);
+        $children = $meta['children'];
+
+        if ($nextLevel === null) {
+            break;
+        }
+
+        if (count($children) !== 1) {
+            break;
+        }
+
+        $current = $children[0];
+        if (!is_array($current)) {
+            break;
+        }
+        $level = $nextLevel;
+    }
+
+    $totals = project_sum_amounts(project_collect_lines($current));
+    $rows[] = [
+        'kind' => 'group',
+        'level' => $topLevel,
+        'project_no' => $labels['project_no'],
+        'details' => $labels['details'],
+        'component_no' => $labels['component_no'],
+        'work_order_no' => $labels['work_order_no'],
+        'type_label' => $labels['type_label'],
+        'show_project' => $show['project'],
+        'show_details' => $show['details'],
+        'show_component' => $show['component'],
+        'show_work_order' => $show['workorder'],
+        'show_type' => $show['type'],
+        'description' => '',
+        'cost' => $totals['cost'],
+        'revenue' => $totals['revenue'],
+    ];
+
+    if ($level === 'type') {
+        foreach (($current['lines'] ?? []) as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $rows[] = [
+                'kind' => 'line',
+                'level' => 'line',
+                'project_no' => '',
+                'details' => '',
+                'component_no' => '',
+                'work_order_no' => '',
+                'type_label' => '',
+                'show_project' => false,
+                'show_details' => false,
+                'show_component' => false,
+                'show_work_order' => false,
+                'show_type' => false,
+                'description' => (string) ($line['description'] ?? ''),
+                'cost' => (float) ($line['cost'] ?? 0),
+                'revenue' => (float) ($line['revenue'] ?? 0),
+            ];
+        }
+        return;
+    }
+
+    $nextLevel = project_next_group_level($level);
+    if ($nextLevel === null) {
+        return;
+    }
+
+    $meta = project_group_node_meta($level, $current);
+    foreach ($meta['children'] as $child) {
+        if (!is_array($child)) {
+            continue;
+        }
+        project_flatten_from_node($child, $nextLevel, $rows);
+    }
+}
+
+/**
+ * Vlakke rijen: groepen met één subgroep blijven op dezelfde regel (tot er gesplitst wordt).
  *
  * @param list<array<string,mixed>> $posten
  * @return list<array<string,mixed>>
@@ -355,41 +592,10 @@ function project_flatten_grouped_rows(array $posten): array
     $grouped = project_group_posten($posten);
 
     foreach ($grouped as $projectGroup) {
-        $showProject = true;
-        foreach ($projectGroup['details_groups'] as $detailGroup) {
-            $showDetails = true;
-            foreach ($detailGroup['components'] as $componentGroup) {
-                $showComponent = true;
-                foreach ($componentGroup['workorders'] as $workOrderGroup) {
-                    $showWorkOrder = true;
-                    foreach ($workOrderGroup['types'] as $typeGroup) {
-                        $showType = true;
-                        foreach ($typeGroup['lines'] as $line) {
-                            $rows[] = [
-                                'project_no' => (string) ($projectGroup['project_no'] ?? ''),
-                                'details' => (string) ($detailGroup['details'] ?? ''),
-                                'component_no' => (string) ($componentGroup['component_no'] ?? ''),
-                                'work_order_no' => (string) ($workOrderGroup['work_order_no'] ?? ''),
-                                'type_label' => (string) ($typeGroup['type_label'] ?? ''),
-                                'description' => (string) ($line['description'] ?? ''),
-                                'cost' => (float) ($line['cost'] ?? 0),
-                                'revenue' => (float) ($line['revenue'] ?? 0),
-                                'show_project' => $showProject,
-                                'show_details' => $showDetails,
-                                'show_component' => $showComponent,
-                                'show_work_order' => $showWorkOrder,
-                                'show_type' => $showType,
-                            ];
-                            $showProject = false;
-                            $showDetails = false;
-                            $showComponent = false;
-                            $showWorkOrder = false;
-                            $showType = false;
-                        }
-                    }
-                }
-            }
+        if (!is_array($projectGroup)) {
+            continue;
         }
+        project_flatten_from_node($projectGroup, 'project', $rows);
     }
 
     return $rows;

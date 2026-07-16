@@ -43,12 +43,27 @@ function portal_url(array $params = []): string
 
 function portal_format_amount(float $amount): string
 {
-    return number_format($amount, 2, ',', '.');
+    return '€ ' . number_format($amount, 2, ',', '.');
 }
 
 function portal_display_value(string $value): string
 {
     return $value !== '' ? $value : '—';
+}
+
+function portal_amount_cell(float $amount, string $kind): string
+{
+    $class = $kind === 'cost' ? 'amount-cost' : 'amount-revenue';
+    return '<td class="num ' . $class . '">' . portal_h(portal_format_amount($amount)) . '</td>';
+}
+
+function portal_group_cell(string $value, bool $active): string
+{
+    if (!$active) {
+        return '<td class="group-empty"></td>';
+    }
+
+    return '<td class="group-cell">' . portal_h(portal_display_value($value)) . '</td>';
 }
 
 /**
@@ -155,9 +170,21 @@ try {
         table.sancus-table th, table.sancus-table td { border-bottom: 1px solid var(--kvt-line); padding: 10px 8px; text-align: left; vertical-align: top; }
         table.sancus-table th { color: var(--kvt-muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
         table.sancus-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        table.sancus-table tr.group-start td.group-cell { border-top: 2px solid var(--kvt-line); }
-        table.sancus-table td.group-cell { font-weight: 700; color: var(--kvt-text); }
+        table.sancus-table td.amount-cost { color: var(--kvt-danger); font-weight: 700; }
+        table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
+        table.sancus-table tr.is-group td.amount-cost,
+        table.sancus-table tr.is-group td.amount-revenue { opacity: 0.55; font-weight: 600; }
+        table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
+        table.sancus-table tr.is-group-project { background: #f0f7fb; }
+        table.sancus-table tr.is-group-project td { border-top: 2px solid var(--kvt-line); }
+        table.sancus-table tr.is-group-details { background: #f8fafc; }
+        table.sancus-table tr.is-group-component,
+        table.sancus-table tr.is-group-workorder,
+        table.sancus-table tr.is-group-type { background: #fcfdfe; }
         table.sancus-table td.group-empty { color: transparent; }
+        table.sancus-table tr.is-line td { color: var(--kvt-text); font-weight: 400; }
+        table.sancus-table tr.is-line td.amount-cost { color: var(--kvt-danger); font-weight: 700; opacity: 1; }
+        table.sancus-table tr.is-line td.amount-revenue { color: #15803d; font-weight: 700; opacity: 1; }
         @media (min-width: 640px) {
             .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
@@ -296,32 +323,20 @@ try {
                         <tbody>
                             <?php foreach ($tableRows as $row): ?>
                                 <?php
-                                $isGroupStart = !empty($row['show_project'])
-                                    || !empty($row['show_details'])
-                                    || !empty($row['show_component'])
-                                    || !empty($row['show_work_order'])
-                                    || !empty($row['show_type']);
-                                $rowClass = $isGroupStart ? ' group-start' : '';
+                                $kind = (string) ($row['kind'] ?? 'line');
+                                $level = (string) ($row['level'] ?? 'line');
+                                $isGroup = $kind === 'group';
+                                $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
                                 ?>
-                                <tr class="<?= portal_h(trim($rowClass)) ?>">
-                                    <td class="<?= !empty($row['show_project']) ? 'group-cell' : 'group-empty' ?>">
-                                        <?= !empty($row['show_project']) ? portal_h(portal_display_value((string) ($row['project_no'] ?? ''))) : '' ?>
-                                    </td>
-                                    <td class="<?= !empty($row['show_details']) ? 'group-cell' : 'group-empty' ?>">
-                                        <?= !empty($row['show_details']) ? portal_h(portal_display_value((string) ($row['details'] ?? ''))) : '' ?>
-                                    </td>
-                                    <td class="<?= !empty($row['show_component']) ? 'group-cell' : 'group-empty' ?>">
-                                        <?= !empty($row['show_component']) ? portal_h(portal_display_value((string) ($row['component_no'] ?? ''))) : '' ?>
-                                    </td>
-                                    <td class="<?= !empty($row['show_work_order']) ? 'group-cell' : 'group-empty' ?>">
-                                        <?= !empty($row['show_work_order']) ? portal_h(portal_display_value((string) ($row['work_order_no'] ?? ''))) : '' ?>
-                                    </td>
-                                    <td class="<?= !empty($row['show_type']) ? 'group-cell' : 'group-empty' ?>">
-                                        <?= !empty($row['show_type']) ? portal_h(portal_display_value((string) ($row['type_label'] ?? ''))) : '' ?>
-                                    </td>
-                                    <td><?= portal_h(portal_display_value((string) ($row['description'] ?? ''))) ?></td>
-                                    <td class="num"><?= portal_h(portal_format_amount((float) ($row['cost'] ?? 0))) ?></td>
-                                    <td class="num"><?= portal_h(portal_format_amount((float) ($row['revenue'] ?? 0))) ?></td>
+                                <tr class="<?= portal_h($rowClass) ?>">
+                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
+                                    <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details'])) ?>
+                                    <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component'])) ?>
+                                    <?= portal_group_cell((string) ($row['work_order_no'] ?? ''), !empty($row['show_work_order'])) ?>
+                                    <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
+                                    <td><?= $level === 'line' ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
+                                    <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost') ?>
+                                    <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
