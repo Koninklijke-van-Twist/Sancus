@@ -235,10 +235,10 @@ function project_fetch_posten_for_jobs(string $company, array $jobNos, int $ttl 
 }
 
 /**
- * Groepeer posten: Project → Details → Component → Werkorder → Type.
+ * Groepeer posten: Details → Project → Component → Werkorder → Type.
  *
  * @param list<array<string,mixed>> $posten
- * @return list<array{project_no:string,details_groups:list<array{details:string,components:list<array{component_no:string,workorders:list<array{work_order_no:string,types:list<array{type_label:string,lines:list<array<string,mixed>>}>}>}>}>}>
+ * @return list<array{details:string,project_groups:list<array{project_no:string,components:list<array{component_no:string,workorders:list<array{work_order_no:string,types:list<array{type_label:string,lines:list<array<string,mixed>>}>}>}>}>}>
  */
 function project_group_posten(array $posten): array
 {
@@ -249,43 +249,43 @@ function project_group_posten(array $posten): array
             continue;
         }
 
-        $projectNo = (string) ($line['job_no'] ?? '');
         $details = (string) ($line['details'] ?? '');
+        $projectNo = (string) ($line['job_no'] ?? '');
         $componentNo = (string) ($line['component_no'] ?? '');
         $workOrderNo = (string) ($line['work_order_no'] ?? '');
         $typeLabel = (string) ($line['type_label'] ?? '');
 
-        if (!isset($tree[$projectNo])) {
-            $tree[$projectNo] = [];
+        if (!isset($tree[$details])) {
+            $tree[$details] = [];
         }
-        if (!isset($tree[$projectNo][$details])) {
-            $tree[$projectNo][$details] = [];
+        if (!isset($tree[$details][$projectNo])) {
+            $tree[$details][$projectNo] = [];
         }
-        if (!isset($tree[$projectNo][$details][$componentNo])) {
-            $tree[$projectNo][$details][$componentNo] = [];
+        if (!isset($tree[$details][$projectNo][$componentNo])) {
+            $tree[$details][$projectNo][$componentNo] = [];
         }
-        if (!isset($tree[$projectNo][$details][$componentNo][$workOrderNo])) {
-            $tree[$projectNo][$details][$componentNo][$workOrderNo] = [];
+        if (!isset($tree[$details][$projectNo][$componentNo][$workOrderNo])) {
+            $tree[$details][$projectNo][$componentNo][$workOrderNo] = [];
         }
-        if (!isset($tree[$projectNo][$details][$componentNo][$workOrderNo][$typeLabel])) {
-            $tree[$projectNo][$details][$componentNo][$workOrderNo][$typeLabel] = [];
+        if (!isset($tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel])) {
+            $tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel] = [];
         }
 
-        $tree[$projectNo][$details][$componentNo][$workOrderNo][$typeLabel][] = $line;
+        $tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel][] = $line;
     }
 
-    $projectKeys = array_keys($tree);
-    natcasesort($projectKeys);
+    $detailKeys = array_keys($tree);
+    natcasesort($detailKeys);
 
     $grouped = [];
-    foreach ($projectKeys as $projectNo) {
-        $detailMap = $tree[$projectNo];
-        $detailKeys = array_keys($detailMap);
-        natcasesort($detailKeys);
+    foreach ($detailKeys as $details) {
+        $projectMap = $tree[$details];
+        $projectKeys = array_keys($projectMap);
+        natcasesort($projectKeys);
 
-        $detailsGroups = [];
-        foreach ($detailKeys as $details) {
-            $componentMap = $detailMap[$details];
+        $projectGroups = [];
+        foreach ($projectKeys as $projectNo) {
+            $componentMap = $projectMap[$projectNo];
             $componentKeys = array_keys($componentMap);
             natcasesort($componentKeys);
 
@@ -328,15 +328,15 @@ function project_group_posten(array $posten): array
                 ];
             }
 
-            $detailsGroups[] = [
-                'details' => $details,
+            $projectGroups[] = [
+                'project_no' => $projectNo,
                 'components' => $components,
             ];
         }
 
         $grouped[] = [
-            'project_no' => $projectNo,
-            'details_groups' => $detailsGroups,
+            'details' => $details,
+            'project_groups' => $projectGroups,
         ];
     }
 
@@ -387,7 +387,7 @@ function project_collect_lines(array $node): array
     }
 
     $lines = [];
-    foreach (['types', 'workorders', 'components', 'details_groups'] as $childKey) {
+    foreach (['types', 'workorders', 'components', 'project_groups'] as $childKey) {
         if (!isset($node[$childKey]) || !is_array($node[$childKey])) {
             continue;
         }
@@ -413,15 +413,15 @@ function project_collect_lines(array $node): array
 function project_group_node_meta(string $level, array $node): array
 {
     switch ($level) {
-        case 'project':
-            return [
-                'label_key' => 'project_no',
-                'child_key' => 'details_groups',
-                'children' => is_array($node['details_groups'] ?? null) ? array_values($node['details_groups']) : [],
-            ];
         case 'details':
             return [
                 'label_key' => 'details',
+                'child_key' => 'project_groups',
+                'children' => is_array($node['project_groups'] ?? null) ? array_values($node['project_groups']) : [],
+            ];
+        case 'project':
+            return [
+                'label_key' => 'project_no',
                 'child_key' => 'components',
                 'children' => is_array($node['components'] ?? null) ? array_values($node['components']) : [],
             ];
@@ -458,8 +458,8 @@ function project_group_node_meta(string $level, array $node): array
 function project_next_group_level(string $level): ?string
 {
     static $order = [
-        'project' => 'details',
-        'details' => 'component',
+        'details' => 'project',
+        'project' => 'component',
         'component' => 'workorder',
         'workorder' => 'type',
         'type' => null,
@@ -591,11 +591,11 @@ function project_flatten_grouped_rows(array $posten): array
     $rows = [];
     $grouped = project_group_posten($posten);
 
-    foreach ($grouped as $projectGroup) {
-        if (!is_array($projectGroup)) {
+    foreach ($grouped as $detailsGroup) {
+        if (!is_array($detailsGroup)) {
             continue;
         }
-        project_flatten_from_node($projectGroup, 'project', $rows);
+        project_flatten_from_node($detailsGroup, 'details', $rows);
     }
 
     return $rows;

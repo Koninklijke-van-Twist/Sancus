@@ -175,9 +175,9 @@ try {
         table.sancus-table tr.is-group td.amount-cost,
         table.sancus-table tr.is-group td.amount-revenue { opacity: 0.55; font-weight: 600; }
         table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
-        table.sancus-table tr.is-group-project { background: #f0f7fb; }
-        table.sancus-table tr.is-group-project td { border-top: 2px solid var(--kvt-line); }
-        table.sancus-table tr.is-group-details { background: #f8fafc; }
+        table.sancus-table tr.is-group-details { background: #f0f7fb; }
+        table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
+        table.sancus-table tr.is-group-project { background: #f8fafc; }
         table.sancus-table tr.is-group-component,
         table.sancus-table tr.is-group-workorder,
         table.sancus-table tr.is-group-type { background: #fcfdfe; }
@@ -310,8 +310,8 @@ try {
                     <table class="sancus-table">
                         <thead>
                             <tr>
-                                <th><?= portal_h(LOC('sancus.col.project')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.details')) ?></th>
+                                <th><?= portal_h(LOC('sancus.col.project')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.component')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.workorder')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.type')) ?></th>
@@ -329,8 +329,8 @@ try {
                                 $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
-                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details'])) ?>
+                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component'])) ?>
                                     <?= portal_group_cell((string) ($row['work_order_no'] ?? ''), !empty($row['show_work_order'])) ?>
                                     <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
