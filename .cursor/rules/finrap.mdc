@@ -1,0 +1,51 @@
+---
+description: Sancus projectconventies voor architectuur, data, UI en OData
+alwaysApply: true
+---
+
+# Sancus projectregels
+
+## Scope en architectuur
+- Deze applicatie draait volledig vanuit de map `web/`.
+- Houd links relatief (`index.php`, `odata.php?...`).
+- De app is mobile-first. Nieuwe UI-wijzigingen moeten eerst op telefoonscherm goed leesbaar zijn.
+
+## Niet wijzigen
+- Bestand `web/logincheck.php` niet aanpassen.
+- Bestand `web/odata.php` niet aanpassen.
+- Bestand `web/auth.php` alleen aanpassen na expliciete gebruikersvraag.
+
+## Data en logica
+- Hoofdflow staat in `web/index.php`.
+- BC OData-helpers staan in `web/project_data.php`.
+- Project/posten-data altijd via functies in `web/project_data.php` ophalen.
+- Leidende BC-entities:
+  - `AppProjecten` — alle projecten zoeken via `KVT_Contract_No`
+  - `ProjectPosten` — projectposten via `Job_No` per project
+- Tabelgroepering: Project → Details → Component → Werkorder → Type (regels met Description/Kosten/Opbrengsten)
+
+## UI-regels
+- Geen zware frameworks introduceren zonder expliciet verzoek.
+- Gebruik bestaande favicon/manifest-bestanden op elke HTML-pagina.
+- Gebruik op de hoofdpagina altijd `logo-website.png`.
+- Toon een laadscherm na ~500 ms bij navigatie die BC-calls triggert (class `contract-nav`).
+
+## Veiligheid en kwaliteit
+- Vang OData-fouten af en toon een korte gebruikersvriendelijke melding.
+- Gebruik cache-widget via `injectTimerHtml(...)` uit `odata.php`; endpoint-acties blijven:
+  - `odata.php?action=cache_status`
+  - `odata.php?action=cache_delete`
+  - `odata.php?action=cache_clear`
+
+## Bij toekomstige uitbreidingen
+- Extra velden eerst verifiëren in `BC Metadata.txt`.
+- Alleen benodigde kolommen opvragen via `$select` voor performance.
+
+## Code-structuur (PHP)
+- Sectievolgorde waar van toepassing: Includes/requires → Constants → Functies → Page load
+- Geen lege secties toevoegen.
+- Classes in een eigen bestand (maximaal 1 class per bestand).
+
+## Werkwijze voor de agent
+- Houd wijzigingen klein en gericht; pas geen ongerelateerde code aan.
+- Volg bestaande conventies in omliggende code voordat je nieuwe patronen introduceert.
