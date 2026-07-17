@@ -57,6 +57,17 @@ function portal_amount_cell(float $amount, string $kind): string
     return '<td class="num ' . $class . '">' . portal_h(portal_format_amount($amount)) . '</td>';
 }
 
+function portal_amount_class(float $amount, string $kind): string
+{
+    if ($kind === 'cost') {
+        return 'amount-cost';
+    }
+    if ($kind === 'revenue') {
+        return 'amount-revenue';
+    }
+    return $amount < 0 ? 'amount-cost' : 'amount-revenue';
+}
+
 function portal_group_cell(string $value, bool $active): string
 {
     if (!$active) {
@@ -99,6 +110,9 @@ $postenCount = 0;
 $projectCount = 0;
 $customerName = '';
 $customerNo = '';
+$totalCost = 0.0;
+$totalRevenue = 0.0;
+$totalProfit = 0.0;
 
 auth_set_current_company_context($company);
 
@@ -123,6 +137,10 @@ try {
             }
 
             $posten = project_fetch_posten_for_jobs($company, $jobNos);
+            $totals = project_sum_amounts($posten);
+            $totalCost = (float) ($totals['cost'] ?? 0);
+            $totalRevenue = (float) ($totals['revenue'] ?? 0);
+            $totalProfit = $totalRevenue - $totalCost;
             $tableRows = project_flatten_grouped_rows($posten);
             $postenCount = count($posten);
             $view = 'posten';
@@ -159,8 +177,11 @@ try {
         .sancus-btn-secondary { background: #fff; color: var(--kvt-main-blue); }
         .sancus-alert { border: 1px solid #fecaca; background: #fef2f2; color: var(--kvt-danger); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
         .sancus-meta { display: grid; gap: 8px; margin-bottom: 12px; }
-        .sancus-meta-row { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+        .sancus-meta-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
         .sancus-meta-label { color: var(--kvt-muted); min-width: 110px; }
+        .sancus-meta-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
+        .sancus-meta-amount.amount-cost { color: var(--kvt-danger); }
+        .sancus-meta-amount.amount-revenue { color: #15803d; }
         .sancus-muted { color: var(--kvt-muted); font-size: 0.92rem; }
         .sancus-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
         .sancus-list-item { border: 1px solid var(--kvt-line); border-radius: 10px; padding: 12px 14px; }
@@ -177,8 +198,8 @@ try {
         table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
         table.sancus-table tr.is-group-details { background: #f0f7fb; }
         table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
-        table.sancus-table tr.is-group-project { background: #f8fafc; }
-        table.sancus-table tr.is-group-component,
+        table.sancus-table tr.is-group-component { background: #f8fafc; }
+        table.sancus-table tr.is-group-project,
         table.sancus-table tr.is-group-workorder,
         table.sancus-table tr.is-group-type { background: #fcfdfe; }
         table.sancus-table td.group-empty { color: transparent; }
@@ -301,6 +322,18 @@ try {
                     <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.lines')) ?></span>
                     <span><?= portal_h((string) $postenCount) ?></span>
                 </div>
+                <div class="sancus-meta-row">
+                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.cost')) ?></span>
+                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalCost, 'cost')) ?>"><?= portal_h(portal_format_amount($totalCost)) ?></span>
+                </div>
+                <div class="sancus-meta-row">
+                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.revenue')) ?></span>
+                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalRevenue, 'revenue')) ?>"><?= portal_h(portal_format_amount($totalRevenue)) ?></span>
+                </div>
+                <div class="sancus-meta-row">
+                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.profit')) ?></span>
+                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalProfit, 'profit')) ?>"><?= portal_h(portal_format_amount($totalProfit)) ?></span>
+                </div>
             </div>
 
             <?php if ($tableRows === []): ?>
@@ -311,8 +344,8 @@ try {
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.col.details')) ?></th>
-                                <th><?= portal_h(LOC('sancus.col.project')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.component')) ?></th>
+                                <th><?= portal_h(LOC('sancus.col.project')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.workorder')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.type')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
@@ -330,8 +363,8 @@ try {
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details'])) ?>
-                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component'])) ?>
+                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['work_order_no'] ?? ''), !empty($row['show_work_order'])) ?>
                                     <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
                                     <td><?= $level === 'line' ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>

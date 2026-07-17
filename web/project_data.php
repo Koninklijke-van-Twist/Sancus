@@ -235,10 +235,10 @@ function project_fetch_posten_for_jobs(string $company, array $jobNos, int $ttl 
 }
 
 /**
- * Groepeer posten: Details → Project → Component → Werkorder → Type.
+ * Groepeer posten: Servicelocatie → Component → Project → Werkorder → Type.
  *
  * @param list<array<string,mixed>> $posten
- * @return list<array{details:string,project_groups:list<array{project_no:string,components:list<array{component_no:string,workorders:list<array{work_order_no:string,types:list<array{type_label:string,lines:list<array<string,mixed>>}>}>}>}>}>
+ * @return list<array{details:string,component_groups:list<array{component_no:string,project_groups:list<array{project_no:string,workorders:list<array{work_order_no:string,types:list<array{type_label:string,lines:list<array<string,mixed>>}>}>}>}>}>
  */
 function project_group_posten(array $posten): array
 {
@@ -250,28 +250,28 @@ function project_group_posten(array $posten): array
         }
 
         $details = (string) ($line['details'] ?? '');
-        $projectNo = (string) ($line['job_no'] ?? '');
         $componentNo = (string) ($line['component_no'] ?? '');
+        $projectNo = (string) ($line['job_no'] ?? '');
         $workOrderNo = (string) ($line['work_order_no'] ?? '');
         $typeLabel = (string) ($line['type_label'] ?? '');
 
         if (!isset($tree[$details])) {
             $tree[$details] = [];
         }
-        if (!isset($tree[$details][$projectNo])) {
-            $tree[$details][$projectNo] = [];
+        if (!isset($tree[$details][$componentNo])) {
+            $tree[$details][$componentNo] = [];
         }
-        if (!isset($tree[$details][$projectNo][$componentNo])) {
-            $tree[$details][$projectNo][$componentNo] = [];
+        if (!isset($tree[$details][$componentNo][$projectNo])) {
+            $tree[$details][$componentNo][$projectNo] = [];
         }
-        if (!isset($tree[$details][$projectNo][$componentNo][$workOrderNo])) {
-            $tree[$details][$projectNo][$componentNo][$workOrderNo] = [];
+        if (!isset($tree[$details][$componentNo][$projectNo][$workOrderNo])) {
+            $tree[$details][$componentNo][$projectNo][$workOrderNo] = [];
         }
-        if (!isset($tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel])) {
-            $tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel] = [];
+        if (!isset($tree[$details][$componentNo][$projectNo][$workOrderNo][$typeLabel])) {
+            $tree[$details][$componentNo][$projectNo][$workOrderNo][$typeLabel] = [];
         }
 
-        $tree[$details][$projectNo][$componentNo][$workOrderNo][$typeLabel][] = $line;
+        $tree[$details][$componentNo][$projectNo][$workOrderNo][$typeLabel][] = $line;
     }
 
     $detailKeys = array_keys($tree);
@@ -279,19 +279,19 @@ function project_group_posten(array $posten): array
 
     $grouped = [];
     foreach ($detailKeys as $details) {
-        $projectMap = $tree[$details];
-        $projectKeys = array_keys($projectMap);
-        natcasesort($projectKeys);
+        $componentMap = $tree[$details];
+        $componentKeys = array_keys($componentMap);
+        natcasesort($componentKeys);
 
-        $projectGroups = [];
-        foreach ($projectKeys as $projectNo) {
-            $componentMap = $projectMap[$projectNo];
-            $componentKeys = array_keys($componentMap);
-            natcasesort($componentKeys);
+        $componentGroups = [];
+        foreach ($componentKeys as $componentNo) {
+            $projectMap = $componentMap[$componentNo];
+            $projectKeys = array_keys($projectMap);
+            natcasesort($projectKeys);
 
-            $components = [];
-            foreach ($componentKeys as $componentNo) {
-                $workOrderMap = $componentMap[$componentNo];
+            $projectGroups = [];
+            foreach ($projectKeys as $projectNo) {
+                $workOrderMap = $projectMap[$projectNo];
                 $workOrderKeys = array_keys($workOrderMap);
                 natcasesort($workOrderKeys);
 
@@ -322,21 +322,21 @@ function project_group_posten(array $posten): array
                     ];
                 }
 
-                $components[] = [
-                    'component_no' => $componentNo,
+                $projectGroups[] = [
+                    'project_no' => $projectNo,
                     'workorders' => $workorders,
                 ];
             }
 
-            $projectGroups[] = [
-                'project_no' => $projectNo,
-                'components' => $components,
+            $componentGroups[] = [
+                'component_no' => $componentNo,
+                'project_groups' => $projectGroups,
             ];
         }
 
         $grouped[] = [
             'details' => $details,
-            'project_groups' => $projectGroups,
+            'component_groups' => $componentGroups,
         ];
     }
 
@@ -387,7 +387,7 @@ function project_collect_lines(array $node): array
     }
 
     $lines = [];
-    foreach (['types', 'workorders', 'components', 'project_groups'] as $childKey) {
+    foreach (['types', 'workorders', 'project_groups', 'component_groups'] as $childKey) {
         if (!isset($node[$childKey]) || !is_array($node[$childKey])) {
             continue;
         }
@@ -416,18 +416,18 @@ function project_group_node_meta(string $level, array $node): array
         case 'details':
             return [
                 'label_key' => 'details',
+                'child_key' => 'component_groups',
+                'children' => is_array($node['component_groups'] ?? null) ? array_values($node['component_groups']) : [],
+            ];
+        case 'component':
+            return [
+                'label_key' => 'component_no',
                 'child_key' => 'project_groups',
                 'children' => is_array($node['project_groups'] ?? null) ? array_values($node['project_groups']) : [],
             ];
         case 'project':
             return [
                 'label_key' => 'project_no',
-                'child_key' => 'components',
-                'children' => is_array($node['components'] ?? null) ? array_values($node['components']) : [],
-            ];
-        case 'component':
-            return [
-                'label_key' => 'component_no',
                 'child_key' => 'workorders',
                 'children' => is_array($node['workorders'] ?? null) ? array_values($node['workorders']) : [],
             ];
@@ -458,9 +458,9 @@ function project_group_node_meta(string $level, array $node): array
 function project_next_group_level(string $level): ?string
 {
     static $order = [
-        'details' => 'project',
-        'project' => 'component',
-        'component' => 'workorder',
+        'details' => 'component',
+        'component' => 'project',
+        'project' => 'workorder',
         'workorder' => 'type',
         'type' => null,
     ];

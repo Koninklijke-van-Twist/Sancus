@@ -22,7 +22,7 @@ alwaysApply: true
 - Leidende BC-entities:
   - `AppProjecten` — alle projecten zoeken via `KVT_Contract_No`
   - `ProjectPosten` — projectposten via `Job_No` per project
-- Tabelgroepering: Servicelocatie → Project → Component → Werkorder → Type; aaneengesloten single-child groepen op één regel met totalen; split zodra een level meerdere subgroepen heeft
+- Tabelgroepering: Servicelocatie → Component → Project → Werkorder → Type; aaneengesloten single-child groepen op één regel met totalen; split zodra een level meerdere subgroepen heeft
 - Bedragen als euro: kosten rood, opbrengsten groen (groepsbedragen subtieler)
 
 ## UI-regels
