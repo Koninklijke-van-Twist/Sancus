@@ -21,8 +21,8 @@ alwaysApply: true
 - Project/posten-data altijd via functies in `web/project_data.php` ophalen.
 - Leidende BC-entities:
   - `AppProjecten` — alle projecten zoeken via `KVT_Contract_No`
-  - `ProjectPosten` — projectposten via `Job_No` per project
-  - `ContractPlanningsregels` — via `Contract_No`; `Main_Entity` = servicelocatie; types Factuur/Credietnota uit geboekte nummers
+  - `ProjectPosten` — projectposten via `Job_No` per project; optioneel filter op `Posting_Date`
+  - `ContractPlanningsregels` — via `Contract_No`; `Main_Entity` = servicelocatie; types Factuur/Credietnota uit geboekte nummers; optioneel filter op `Planned_Invoice_Date`
 - Tabelgroepering: Servicelocatie → Component → Project → Werkorder → Type; aaneengesloten single-child groepen op één regel met totalen; split zodra een level meerdere subgroepen heeft
 - Bedragen als euro: kosten rood, opbrengsten groen (negatieve opbrengsten rood); groepsbedragen subtieler
 - Regeldetails: Aantallen vóór Kosten; bij Uren werksoort / bij Materiaal artikelnummer in Type-kolom; boekings-/planningsdatum subtiel in Servicelocatie-kolom

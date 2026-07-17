@@ -22,6 +22,23 @@ function project_escape_odata_string(string $value): string
     return str_replace("'", "''", trim($value));
 }
 
+/**
+ * Voeg een optioneel datumfilter toe aan een OData $filter-clausule.
+ */
+function project_append_date_range_filter(string $filter, string $field, string $dateFrom = '', string $dateTo = ''): string
+{
+    if ($dateFrom !== '') {
+        $clause = $field . ' ge ' . $dateFrom;
+        $filter = $filter === '' ? $clause : ($filter . ' and ' . $clause);
+    }
+    if ($dateTo !== '') {
+        $clause = $field . ' le ' . $dateTo;
+        $filter = $filter === '' ? $clause : ($filter . ' and ' . $clause);
+    }
+
+    return $filter;
+}
+
 function project_company_entity_url(string $baseUrl, string $environment, string $company, string $entitySet, array $query): string
 {
     $safeCompany = project_escape_odata_string($company);
@@ -215,16 +232,23 @@ function project_fetch_by_no(string $company, string $projectNo, int $ttl = 3600
     return $normalized['no'] !== '' ? $normalized : null;
 }
 
-function project_fetch_posten(string $company, string $jobNo, int $ttl = 3600): array
+function project_fetch_posten(string $company, string $jobNo, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
 {
     $escaped = project_escape_odata_string($jobNo);
     if ($escaped === '') {
         return [];
     }
 
+    $filter = project_append_date_range_filter(
+        "Job_No eq '" . $escaped . "'",
+        'Posting_Date',
+        $dateFrom,
+        $dateTo
+    );
+
     $rows = project_try_fetch_rows($company, 'ProjectPosten', [
         '$select' => SANCUS_POSTEN_SELECT,
-        '$filter' => "Job_No eq '" . $escaped . "'",
+        '$filter' => $filter,
         '$orderby' => 'Entry_No asc',
     ], $ttl);
 
@@ -245,7 +269,7 @@ function project_fetch_posten(string $company, string $jobNo, int $ttl = 3600): 
  * @param list<string> $jobNos
  * @return list<array<string,mixed>>
  */
-function project_fetch_posten_for_jobs(string $company, array $jobNos, int $ttl = 3600): array
+function project_fetch_posten_for_jobs(string $company, array $jobNos, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
 {
     $posten = [];
     $seen = [];
@@ -257,7 +281,7 @@ function project_fetch_posten_for_jobs(string $company, array $jobNos, int $ttl 
         }
         $seen[$jobNo] = true;
 
-        foreach (project_fetch_posten($company, $jobNo, $ttl) as $line) {
+        foreach (project_fetch_posten($company, $jobNo, $dateFrom, $dateTo, $ttl) as $line) {
             $posten[] = $line;
         }
     }
@@ -322,16 +346,23 @@ function project_normalize_planning_row(array $row): array
  *
  * @return list<array<string,mixed>>
  */
-function project_fetch_planning_for_contract(string $company, string $contractNo, int $ttl = 3600): array
+function project_fetch_planning_for_contract(string $company, string $contractNo, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
 {
     $escaped = project_escape_odata_string($contractNo);
     if ($escaped === '') {
         return [];
     }
 
+    $filter = project_append_date_range_filter(
+        "Contract_No eq '" . $escaped . "'",
+        'Planned_Invoice_Date',
+        $dateFrom,
+        $dateTo
+    );
+
     $rows = project_try_fetch_rows($company, 'ContractPlanningsregels', [
         '$select' => SANCUS_PLANNING_SELECT,
-        '$filter' => "Contract_No eq '" . $escaped . "'",
+        '$filter' => $filter,
         '$orderby' => 'Line_No asc',
     ], $ttl);
 

@@ -117,9 +117,25 @@ function portal_display_value(string $value): string
     return $value !== '' ? $value : '—';
 }
 
-function portal_amount_cell(float $amount, string $kind): string
+function portal_parse_date_param(string $value): string
 {
-    return '<td class="num ' . portal_h(portal_amount_class($amount, $kind)) . '">'
+    $value = trim($value);
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
+        return '';
+    }
+
+    $parts = explode('-', $value);
+    if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+        return '';
+    }
+
+    return $value;
+}
+
+function portal_amount_cell(float $amount, string $kind, string $extraClass = ''): string
+{
+    $classes = trim('num ' . portal_amount_class($amount, $kind) . ' ' . $extraClass);
+    return '<td class="' . portal_h($classes) . '">'
         . portal_h(portal_format_amount($amount))
         . '</td>';
 }
@@ -172,6 +188,13 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
 }
 
 $contractNo = trim((string) ($_GET['contract'] ?? ''));
+$dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
+$dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
+if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
+    $tmp = $dateFrom;
+    $dateFrom = $dateTo;
+    $dateTo = $tmp;
+}
 
 $view = 'search';
 $errorKey = '';
@@ -192,7 +215,7 @@ try {
         $projects = project_fetch_by_contract_no($company, $contractNo);
 
         if ($projects === []) {
-            $planningOnly = project_fetch_planning_for_contract($company, $contractNo);
+            $planningOnly = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
             if ($planningOnly === []) {
                 $errorKey = 'sancus.error.project_not_found';
                 $view = 'search';
@@ -218,8 +241,8 @@ try {
                 }
             }
 
-            $posten = project_fetch_posten_for_jobs($company, $jobNos);
-            $planning = project_fetch_planning_for_contract($company, $contractNo);
+            $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo);
+            $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
             $lines = array_merge($posten, $planning);
             $totals = project_sum_amounts($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
@@ -246,7 +269,7 @@ try {
     <link rel="icon" href="doc.svg" type="image/svg+xml">
     <?php renderLanguageSwitcherStyles(); ?>
     <style>
-        .sancus-page { max-width: 1100px; margin: 0 auto; padding: 16px; }
+        .sancus-page { max-width: 1700px; margin: 0 auto; padding: 16px; }
         .sancus-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 20px; }
         .sancus-header img { max-height: 42px; width: auto; }
         .sancus-header-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-left: auto; }
@@ -254,6 +277,8 @@ try {
         .sancus-card h1, .sancus-card h2 { margin: 0 0 12px; color: var(--kvt-text); }
         .sancus-subtitle { color: var(--kvt-muted); margin: 6px 0 0; }
         .sancus-form { display: grid; gap: 12px; }
+        .sancus-form-grid,
+        .sancus-form-dates { display: grid; gap: 12px; }
         .sancus-form label { display: grid; gap: 6px; font-weight: 700; color: var(--kvt-muted); }
         .sancus-form input, .sancus-form select, .sancus-btn { font: inherit; border-radius: 10px; border: 1px solid var(--kvt-line); padding: 12px 14px; }
         .sancus-form input, .sancus-form select { width: 100%; box-sizing: border-box; }
@@ -297,10 +322,12 @@ try {
         table.sancus-table tr.is-line td.amount-zero { color: #9ca3af; font-weight: 400; opacity: 1; }
         table.sancus-table tr.is-line td.line-date { color: #c7cacd; font-weight: 400; font-size: 0.88em; white-space: nowrap; }
         table.sancus-table tr.is-line td.line-type-detail { color: #9ca3af; font-weight: 400; }
-        table.sancus-table .qty-hours { cursor: help; }
+        table.sancus-table .qty-hours,
+        table.sancus-table .qty-hours-zone { cursor: help; }
         @media (min-width: 640px) {
             .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
+            .sancus-form-dates { grid-template-columns: 1fr 1fr; }
         }
         .sancus-loader {
             position: fixed;
@@ -365,21 +392,33 @@ try {
         <h1 class="brand-display"><?= portal_h(LOC('sancus.hero.title')) ?></h1>
         <p class="sancus-subtitle"><?= portal_h(LOC('sancus.hero.subtitle')) ?></p>
 
-        <form class="sancus-form sancus-form-grid contract-nav" method="get" action="index.php" style="margin-top: 16px;">
+        <form class="sancus-form contract-nav" method="get" action="index.php" style="margin-top: 16px;">
             <input type="hidden" name="lang" value="<?= portal_h(getCurrentLanguage()) ?>">
-            <label>
-                <?= portal_h(LOC('sancus.label.company')) ?>
-                <select name="company">
-                    <?php foreach ($companies as $companyOption): ?>
-                        <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <label>
-                <?= portal_h(LOC('sancus.label.contract')) ?>
-                <input type="search" name="contract" value="<?= portal_h($contractNo) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
-            </label>
-            <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
+            <div class="sancus-form-grid">
+                <label>
+                    <?= portal_h(LOC('sancus.label.company')) ?>
+                    <select name="company">
+                        <?php foreach ($companies as $companyOption): ?>
+                            <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label>
+                    <?= portal_h(LOC('sancus.label.contract')) ?>
+                    <input type="search" name="contract" value="<?= portal_h($contractNo) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
+                </label>
+                <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
+            </div>
+            <div class="sancus-form-dates">
+                <label>
+                    <?= portal_h(LOC('sancus.label.date_from')) ?>
+                    <input type="date" name="date_from" value="<?= portal_h($dateFrom) ?>">
+                </label>
+                <label>
+                    <?= portal_h(LOC('sancus.label.date_to')) ?>
+                    <input type="date" name="date_to" value="<?= portal_h($dateTo) ?>">
+                </label>
+            </div>
         </form>
     </section>
 
@@ -456,6 +495,10 @@ try {
                                 $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
                                 $postingDate = portal_format_date((string) ($row['posting_date'] ?? ''));
                                 $typeDetail = trim((string) ($row['type_detail'] ?? ''));
+                                $qty = $row['quantity'] ?? null;
+                                $typeLabel = (string) ($row['type_label'] ?? '');
+                                $showHoursQty = $typeLabel === 'Uren' && ($isLine || ($qty !== null && !empty($row['show_type'])));
+                                $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?php if ($isLine): ?>
@@ -471,10 +514,8 @@ try {
                                     <?php else: ?>
                                         <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
                                     <?php endif; ?>
-                                    <td><?= $isLine ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
-                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?>"><?php
-                                        $qty = $row['quantity'] ?? null;
-                                        $typeLabel = (string) ($row['type_label'] ?? '');
+                                    <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= $isLine ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
+                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"><?php
                                         if ($isLine) {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         } elseif ($qty !== null && !empty($row['show_type'])) {
@@ -482,7 +523,7 @@ try {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         }
                                     ?></td>
-                                    <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost') ?>
+                                    <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost', trim($hoursZoneClass)) ?>
                                     <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
                                 </tr>
                             <?php endforeach; ?>
@@ -574,6 +615,39 @@ try {
     var hoverEl = null;
     var showClock = false;
 
+    function findHoursEl(from) {
+        if (!(from instanceof Element)) {
+            return null;
+        }
+        var direct = from.closest('.qty-hours');
+        if (direct) {
+            return direct;
+        }
+        var zone = from.closest('.qty-hours-zone');
+        if (!zone) {
+            return null;
+        }
+        var row = zone.closest('tr');
+        return row ? row.querySelector('.qty-hours') : null;
+    }
+
+    function hoursZoneContains(hoursEl, node) {
+        if (!(node instanceof Node) || !hoursEl) {
+            return false;
+        }
+        var row = hoursEl.closest('tr');
+        if (!row) {
+            return false;
+        }
+        var zones = row.querySelectorAll('.qty-hours-zone');
+        for (var i = 0; i < zones.length; i++) {
+            if (zones[i].contains(node)) {
+                return true;
+            }
+        }
+        return hoursEl.contains(node);
+    }
+
     function stopHoverToggle() {
         if (hoverTimer !== null) {
             window.clearInterval(hoverTimer);
@@ -597,11 +671,7 @@ try {
     }
 
     document.addEventListener('mouseover', function (event) {
-        var target = event.target;
-        if (!(target instanceof Element)) {
-            return;
-        }
-        var el = target.closest('.qty-hours');
+        var el = findHoursEl(event.target);
         if (!el || el === hoverEl) {
             return;
         }
@@ -616,12 +686,11 @@ try {
         if (!hoverEl) {
             return;
         }
-        var related = event.relatedTarget;
-        if (related instanceof Node && hoverEl.contains(related)) {
+        if (hoursZoneContains(hoverEl, event.relatedTarget)) {
             return;
         }
-        var target = event.target;
-        if (!(target instanceof Element) || !target.closest('.qty-hours')) {
+        var leaving = findHoursEl(event.target);
+        if (!leaving || leaving !== hoverEl) {
             return;
         }
         stopHoverToggle();
