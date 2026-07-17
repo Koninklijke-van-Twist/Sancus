@@ -9,8 +9,9 @@ require_once __DIR__ . '/odata.php';
 /**
  * Constants
  */
-const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Type,Work_Type_Code,Description,LVS_Main_Entity,LVS_Component_No,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
+const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Quantity,LVS_Main_Entity,LVS_Component_No,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
+const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 
 /**
  * Functies
@@ -108,29 +109,59 @@ function project_line_type_sort_key(string $label): int
         'Materiaal' => 0,
         'Kilometers' => 1,
         'Uren' => 2,
+        'Factuur' => 3,
+        'Credietnota' => 4,
     ];
 
     return $order[$label] ?? 99;
 }
 
+function project_line_type_detail(string $typeLabel, string $workTypeCode, string $articleNo): string
+{
+    if ($typeLabel === 'Uren') {
+        return $workTypeCode;
+    }
+    if ($typeLabel === 'Materiaal') {
+        return $articleNo;
+    }
+
+    return '';
+}
+
 function project_normalize_posten_row(array $row): array
 {
+    $entryType = trim((string) ($row['Entry_Type'] ?? ''));
     $type = trim((string) ($row['Type'] ?? ''));
     $workTypeCode = trim((string) ($row['Work_Type_Code'] ?? ''));
+    $articleNo = trim((string) ($row['No'] ?? ''));
     $typeLabel = project_line_type_label($type, $workTypeCode);
+    $cost = (float) ($row['Total_Cost_LCY'] ?? 0);
+    $revenue = (float) ($row['Line_Amount_LCY'] ?? 0);
+
+    // Boekingssoort bepaalt welke bedragen meetellen
+    if (strcasecmp($entryType, 'Gebruik') === 0 || strcasecmp($entryType, 'Usage') === 0) {
+        $revenue = 0.0;
+    } elseif (strcasecmp($entryType, 'Verkoop') === 0 || strcasecmp($entryType, 'Sale') === 0) {
+        $cost = 0.0;
+    }
 
     return [
         'entry_no' => (int) ($row['Entry_No'] ?? 0),
         'job_no' => trim((string) ($row['Job_No'] ?? '')),
+        'entry_type' => $entryType,
         'details' => trim((string) ($row['LVS_Main_Entity'] ?? '')),
         'component_no' => trim((string) ($row['LVS_Component_No'] ?? '')),
         'work_order_no' => trim((string) ($row['LVS_Work_Order_No'] ?? '')),
         'bc_type' => $type,
         'work_type_code' => $workTypeCode,
+        'article_no' => $articleNo,
         'type_label' => $typeLabel,
+        'type_detail' => project_line_type_detail($typeLabel, $workTypeCode, $articleNo),
         'description' => trim((string) ($row['Description'] ?? '')),
-        'cost' => (float) ($row['Total_Cost_LCY'] ?? 0),
-        'revenue' => (float) ($row['Line_Amount_LCY'] ?? 0),
+        'posting_date' => trim((string) ($row['Posting_Date'] ?? '')),
+        'quantity' => (float) ($row['Quantity'] ?? 0),
+        'cost' => $cost,
+        'revenue' => $revenue,
     ];
 }
 
@@ -232,6 +263,89 @@ function project_fetch_posten_for_jobs(string $company, array $jobNos, int $ttl 
     }
 
     return $posten;
+}
+
+/**
+ * Zet één ContractPlanningsregel om naar 0–2 overzichtsregels (Factuur / Credietnota).
+ *
+ * @return list<array<string,mixed>>
+ */
+function project_normalize_planning_row(array $row): array
+{
+    $details = trim((string) ($row['Main_Entity'] ?? ''));
+    $plannedDate = trim((string) ($row['Planned_Invoice_Date'] ?? ''));
+    $invoiceAmount = (float) ($row['Invoice_Amount'] ?? 0);
+    $postedInvoiceNo = trim((string) ($row['Posted_Invoice_No'] ?? ''));
+    $postedCreditMemoNo = trim((string) ($row['Posted_Credit_Memo_No'] ?? ''));
+    $lineNo = (int) ($row['Line_No'] ?? 0);
+
+    $base = [
+        'entry_no' => $lineNo,
+        'job_no' => '',
+        'entry_type' => '',
+        'details' => $details,
+        'component_no' => '',
+        'work_order_no' => '',
+        'bc_type' => '',
+        'work_type_code' => '',
+        'article_no' => '',
+        'type_detail' => '',
+        'posting_date' => $plannedDate,
+        'quantity' => 1.0,
+        'cost' => 0.0,
+    ];
+
+    $lines = [];
+
+    if ($postedInvoiceNo !== '') {
+        $lines[] = array_merge($base, [
+            'type_label' => 'Factuur',
+            'description' => $postedInvoiceNo,
+            'revenue' => $invoiceAmount,
+        ]);
+    }
+
+    if ($postedCreditMemoNo !== '') {
+        $lines[] = array_merge($base, [
+            'type_label' => 'Credietnota',
+            'description' => $postedCreditMemoNo,
+            // Credietnota blijft in Opbrengsten, maar als negatief bedrag
+            'revenue' => -abs($invoiceAmount),
+        ]);
+    }
+
+    return $lines;
+}
+
+/**
+ * Haal ContractPlanningsregels op voor een contractnummer.
+ *
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_planning_for_contract(string $company, string $contractNo, int $ttl = 3600): array
+{
+    $escaped = project_escape_odata_string($contractNo);
+    if ($escaped === '') {
+        return [];
+    }
+
+    $rows = project_try_fetch_rows($company, 'ContractPlanningsregels', [
+        '$select' => SANCUS_PLANNING_SELECT,
+        '$filter' => "Contract_No eq '" . $escaped . "'",
+        '$orderby' => 'Line_No asc',
+    ], $ttl);
+
+    $lines = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        foreach (project_normalize_planning_row($row) as $line) {
+            $lines[] = $line;
+        }
+    }
+
+    return $lines;
 }
 
 /**
@@ -344,15 +458,16 @@ function project_group_posten(array $posten): array
 }
 
 /**
- * Sommeer kosten en opbrengsten van genormaliseerde postenregels.
+ * Sommeer kosten, opbrengsten en aantallen van genormaliseerde postenregels.
  *
  * @param list<array<string,mixed>> $lines
- * @return array{cost:float,revenue:float}
+ * @return array{cost:float,revenue:float,quantity:float}
  */
 function project_sum_amounts(array $lines): array
 {
     $cost = 0.0;
     $revenue = 0.0;
+    $quantity = 0.0;
 
     foreach ($lines as $line) {
         if (!is_array($line)) {
@@ -360,11 +475,13 @@ function project_sum_amounts(array $lines): array
         }
         $cost += (float) ($line['cost'] ?? 0);
         $revenue += (float) ($line['revenue'] ?? 0);
+        $quantity += (float) ($line['quantity'] ?? 0);
     }
 
     return [
         'cost' => $cost,
         'revenue' => $revenue,
+        'quantity' => $quantity,
     ];
 }
 
@@ -530,12 +647,16 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'component_no' => $labels['component_no'],
         'work_order_no' => $labels['work_order_no'],
         'type_label' => $labels['type_label'],
+        'type_detail' => '',
         'show_project' => $show['project'],
         'show_details' => $show['details'],
         'show_component' => $show['component'],
         'show_work_order' => $show['workorder'],
         'show_type' => $show['type'],
         'description' => '',
+        'posting_date' => '',
+        // Quantity totals only make sense within a single type group
+        'quantity' => ($level === 'type') ? $totals['quantity'] : null,
         'cost' => $totals['cost'],
         'revenue' => $totals['revenue'],
     ];
@@ -552,13 +673,16 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
                 'details' => '',
                 'component_no' => '',
                 'work_order_no' => '',
-                'type_label' => '',
+                'type_label' => (string) ($line['type_label'] ?? ''),
+                'type_detail' => (string) ($line['type_detail'] ?? ''),
                 'show_project' => false,
                 'show_details' => false,
                 'show_component' => false,
                 'show_work_order' => false,
                 'show_type' => false,
                 'description' => (string) ($line['description'] ?? ''),
+                'posting_date' => (string) ($line['posting_date'] ?? ''),
+                'quantity' => (float) ($line['quantity'] ?? 0),
                 'cost' => (float) ($line['cost'] ?? 0),
                 'revenue' => (float) ($line['revenue'] ?? 0),
             ];

@@ -46,6 +46,72 @@ function portal_format_amount(float $amount): string
     return '€ ' . number_format($amount, 2, ',', '.');
 }
 
+function portal_format_quantity(float $quantity): string
+{
+    if (abs($quantity - round($quantity)) < 0.00001) {
+        return number_format($quantity, 0, ',', '.');
+    }
+
+    return rtrim(rtrim(number_format($quantity, 2, ',', '.'), '0'), ',');
+}
+
+function portal_quantity_unit(string $typeLabel): string
+{
+    switch ($typeLabel) {
+        case 'Uren':
+            return ' uur';
+        case 'Materiaal':
+            return ' st';
+        case 'Kilometers':
+            return ' km';
+        default:
+            return '';
+    }
+}
+
+function portal_format_quantity_with_unit(float $quantity, string $typeLabel): string
+{
+    return portal_format_quantity($quantity) . portal_quantity_unit($typeLabel);
+}
+
+function portal_format_hours_clock(float $hours): string
+{
+    $negative = $hours < 0;
+    $totalMinutes = (int) round(abs($hours) * 60);
+    $hh = intdiv($totalMinutes, 60);
+    $mm = $totalMinutes % 60;
+    $clock = sprintf('%02d:%02d', $hh, $mm);
+
+    return $negative ? '-' . $clock : $clock;
+}
+
+function portal_quantity_html(float $quantity, string $typeLabel): string
+{
+    $decimal = portal_format_quantity_with_unit($quantity, $typeLabel);
+    if ($typeLabel !== 'Uren') {
+        return portal_h($decimal);
+    }
+
+    return '<span class="qty-hours"'
+        . ' data-decimal="' . portal_h($decimal) . '"'
+        . ' data-clock="' . portal_h(portal_format_hours_clock($quantity)) . '"'
+        . '>' . portal_h($decimal) . '</span>';
+}
+
+function portal_format_date(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        return '';
+    }
+
+    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $value, $matches) === 1) {
+        return $matches[3] . '-' . $matches[2] . '-' . $matches[1];
+    }
+
+    return $value;
+}
+
 function portal_display_value(string $value): string
 {
     return $value !== '' ? $value : '—';
@@ -53,17 +119,22 @@ function portal_display_value(string $value): string
 
 function portal_amount_cell(float $amount, string $kind): string
 {
-    $class = $kind === 'cost' ? 'amount-cost' : 'amount-revenue';
-    return '<td class="num ' . $class . '">' . portal_h(portal_format_amount($amount)) . '</td>';
+    return '<td class="num ' . portal_h(portal_amount_class($amount, $kind)) . '">'
+        . portal_h(portal_format_amount($amount))
+        . '</td>';
 }
 
 function portal_amount_class(float $amount, string $kind): string
 {
+    if (abs($amount) < 0.00001) {
+        return 'amount-zero';
+    }
     if ($kind === 'cost') {
         return 'amount-cost';
     }
     if ($kind === 'revenue') {
-        return 'amount-revenue';
+        // Negatieve opbrengsten (credietnota's) rood, niet groen
+        return $amount < 0 ? 'amount-cost' : 'amount-revenue';
     }
     return $amount < 0 ? 'amount-cost' : 'amount-revenue';
 }
@@ -121,8 +192,19 @@ try {
         $projects = project_fetch_by_contract_no($company, $contractNo);
 
         if ($projects === []) {
-            $errorKey = 'sancus.error.project_not_found';
-            $view = 'search';
+            $planningOnly = project_fetch_planning_for_contract($company, $contractNo);
+            if ($planningOnly === []) {
+                $errorKey = 'sancus.error.project_not_found';
+                $view = 'search';
+            } else {
+                $totals = project_sum_amounts($planningOnly);
+                $totalCost = (float) ($totals['cost'] ?? 0);
+                $totalRevenue = (float) ($totals['revenue'] ?? 0);
+                $totalProfit = $totalRevenue - $totalCost;
+                $tableRows = project_flatten_grouped_rows($planningOnly);
+                $postenCount = count($planningOnly);
+                $view = 'posten';
+            }
         } else {
             $projectCount = count($projects);
             $jobNos = [];
@@ -137,12 +219,14 @@ try {
             }
 
             $posten = project_fetch_posten_for_jobs($company, $jobNos);
-            $totals = project_sum_amounts($posten);
+            $planning = project_fetch_planning_for_contract($company, $contractNo);
+            $lines = array_merge($posten, $planning);
+            $totals = project_sum_amounts($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
             $totalRevenue = (float) ($totals['revenue'] ?? 0);
             $totalProfit = $totalRevenue - $totalCost;
-            $tableRows = project_flatten_grouped_rows($posten);
-            $postenCount = count($posten);
+            $tableRows = project_flatten_grouped_rows($lines);
+            $postenCount = count($lines);
             $view = 'posten';
         }
     }
@@ -182,19 +266,23 @@ try {
         .sancus-meta-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
         .sancus-meta-amount.amount-cost { color: var(--kvt-danger); }
         .sancus-meta-amount.amount-revenue { color: #15803d; }
+        .sancus-meta-amount.amount-zero { color: #9ca3af; }
         .sancus-muted { color: var(--kvt-muted); font-size: 0.92rem; }
         .sancus-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
         .sancus-list-item { border: 1px solid var(--kvt-line); border-radius: 10px; padding: 12px 14px; }
         .sancus-list-item a { color: var(--kvt-main-blue); text-decoration: none; font-weight: 700; }
         .sancus-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        table.sancus-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 880px; }
+        table.sancus-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 960px; }
         table.sancus-table th, table.sancus-table td { border-bottom: 1px solid var(--kvt-line); padding: 10px 8px; text-align: left; vertical-align: top; }
         table.sancus-table th { color: var(--kvt-muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
         table.sancus-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
         table.sancus-table td.amount-cost { color: var(--kvt-danger); font-weight: 700; }
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
+        table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table tr.is-group td.amount-cost,
         table.sancus-table tr.is-group td.amount-revenue { opacity: 0.55; font-weight: 600; }
+        table.sancus-table tr.is-group td.amount-zero { opacity: 0.7; font-weight: 400; }
+        table.sancus-table tr.is-group td.num-qty { opacity: 0.55; font-weight: 600; }
         table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
         table.sancus-table tr.is-group-details { background: #f0f7fb; }
         table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
@@ -206,6 +294,10 @@ try {
         table.sancus-table tr.is-line td { color: var(--kvt-text); font-weight: 400; }
         table.sancus-table tr.is-line td.amount-cost { color: var(--kvt-danger); font-weight: 700; opacity: 1; }
         table.sancus-table tr.is-line td.amount-revenue { color: #15803d; font-weight: 700; opacity: 1; }
+        table.sancus-table tr.is-line td.amount-zero { color: #9ca3af; font-weight: 400; opacity: 1; }
+        table.sancus-table tr.is-line td.line-date { color: #c7cacd; font-weight: 400; font-size: 0.88em; white-space: nowrap; }
+        table.sancus-table tr.is-line td.line-type-detail { color: #9ca3af; font-weight: 400; }
+        table.sancus-table .qty-hours { cursor: help; }
         @media (min-width: 640px) {
             .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
@@ -349,6 +441,7 @@ try {
                                 <th><?= portal_h(LOC('sancus.col.workorder')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.type')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
+                                <th class="num"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
                                 <th class="num"><?= portal_h(LOC('sancus.col.cost')) ?></th>
                                 <th class="num"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
                             </tr>
@@ -359,15 +452,36 @@ try {
                                 $kind = (string) ($row['kind'] ?? 'line');
                                 $level = (string) ($row['level'] ?? 'line');
                                 $isGroup = $kind === 'group';
+                                $isLine = $level === 'line';
                                 $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
+                                $postingDate = portal_format_date((string) ($row['posting_date'] ?? ''));
+                                $typeDetail = trim((string) ($row['type_detail'] ?? ''));
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
-                                    <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details'])) ?>
+                                    <?php if ($isLine): ?>
+                                        <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
+                                    <?php else: ?>
+                                        <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details'])) ?>
+                                    <?php endif; ?>
                                     <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component'])) ?>
                                     <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['work_order_no'] ?? ''), !empty($row['show_work_order'])) ?>
-                                    <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
-                                    <td><?= $level === 'line' ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
+                                    <?php if ($isLine): ?>
+                                        <td class="line-type-detail"><?= $typeDetail !== '' ? portal_h($typeDetail) : '' ?></td>
+                                    <?php else: ?>
+                                        <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
+                                    <?php endif; ?>
+                                    <td><?= $isLine ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
+                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?>"><?php
+                                        $qty = $row['quantity'] ?? null;
+                                        $typeLabel = (string) ($row['type_label'] ?? '');
+                                        if ($isLine) {
+                                            echo portal_quantity_html((float) $qty, $typeLabel);
+                                        } elseif ($qty !== null && !empty($row['show_type'])) {
+                                            // Only show quantity totals on type groups (same unit)
+                                            echo portal_quantity_html((float) $qty, $typeLabel);
+                                        }
+                                    ?></td>
                                     <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost') ?>
                                     <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
                                 </tr>
@@ -452,6 +566,65 @@ try {
         loader.classList.remove('is-visible');
         loader.setAttribute('aria-hidden', 'true');
         loader.setAttribute('aria-busy', 'false');
+    });
+})();
+
+(function () {
+    var hoverTimer = null;
+    var hoverEl = null;
+    var showClock = false;
+
+    function stopHoverToggle() {
+        if (hoverTimer !== null) {
+            window.clearInterval(hoverTimer);
+            hoverTimer = null;
+        }
+        if (hoverEl) {
+            hoverEl.textContent = hoverEl.getAttribute('data-decimal') || '';
+            hoverEl = null;
+        }
+        showClock = false;
+    }
+
+    function tickHover() {
+        if (!hoverEl) {
+            return;
+        }
+        showClock = !showClock;
+        hoverEl.textContent = showClock
+            ? (hoverEl.getAttribute('data-clock') || '')
+            : (hoverEl.getAttribute('data-decimal') || '');
+    }
+
+    document.addEventListener('mouseover', function (event) {
+        var target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        var el = target.closest('.qty-hours');
+        if (!el || el === hoverEl) {
+            return;
+        }
+        stopHoverToggle();
+        hoverEl = el;
+        showClock = false;
+        tickHover();
+        hoverTimer = window.setInterval(tickHover, 1000);
+    });
+
+    document.addEventListener('mouseout', function (event) {
+        if (!hoverEl) {
+            return;
+        }
+        var related = event.relatedTarget;
+        if (related instanceof Node && hoverEl.contains(related)) {
+            return;
+        }
+        var target = event.target;
+        if (!(target instanceof Element) || !target.closest('.qty-hours')) {
+            return;
+        }
+        stopHoverToggle();
     });
 })();
 </script>
