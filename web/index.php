@@ -216,16 +216,18 @@ try {
 
         if ($projects === []) {
             $planningOnly = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
-            if ($planningOnly === []) {
+            $workorders = project_fetch_workorders_for_contract($company, $contractNo);
+            $lines = project_supplement_unbooked_workorders($planningOnly, $workorders);
+            if ($lines === []) {
                 $errorKey = 'sancus.error.project_not_found';
                 $view = 'search';
             } else {
-                $totals = project_sum_amounts($planningOnly);
+                $totals = project_sum_amounts($lines);
                 $totalCost = (float) ($totals['cost'] ?? 0);
                 $totalRevenue = (float) ($totals['revenue'] ?? 0);
                 $totalProfit = $totalRevenue - $totalCost;
-                $tableRows = project_flatten_grouped_rows($planningOnly);
-                $postenCount = count($planningOnly);
+                $tableRows = project_flatten_grouped_rows($lines);
+                $postenCount = count($lines);
                 $view = 'posten';
             }
         } else {
@@ -243,7 +245,8 @@ try {
 
             $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo);
             $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
-            $lines = array_merge($posten, $planning);
+            $workorders = project_fetch_workorders_for_contract($company, $contractNo);
+            $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
             $totals = project_sum_amounts($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
             $totalRevenue = (float) ($totals['revenue'] ?? 0);
@@ -305,9 +308,9 @@ try {
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table tr.is-group td.amount-cost,
-        table.sancus-table tr.is-group td.amount-revenue { opacity: 0.55; font-weight: 600; }
-        table.sancus-table tr.is-group td.amount-zero { opacity: 0.7; font-weight: 400; }
-        table.sancus-table tr.is-group td.num-qty { opacity: 0.55; font-weight: 600; }
+        table.sancus-table tr.is-group td.amount-revenue { opacity: 1; font-weight: 700; }
+        table.sancus-table tr.is-group td.amount-zero { opacity: 1; font-weight: 400; }
+        table.sancus-table tr.is-group td.num-qty { opacity: 1; font-weight: 600; }
         table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
         table.sancus-table tr.is-group-details { background: #f0f7fb; }
         table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
@@ -317,11 +320,18 @@ try {
         table.sancus-table tr.is-group-type { background: #fcfdfe; }
         table.sancus-table td.group-empty { color: transparent; }
         table.sancus-table tr.is-line td { color: var(--kvt-text); font-weight: 400; }
-        table.sancus-table tr.is-line td.amount-cost { color: var(--kvt-danger); font-weight: 700; opacity: 1; }
-        table.sancus-table tr.is-line td.amount-revenue { color: #15803d; font-weight: 700; opacity: 1; }
-        table.sancus-table tr.is-line td.amount-zero { color: #9ca3af; font-weight: 400; opacity: 1; }
+        table.sancus-table tr.is-line td.amount-cost { color: var(--kvt-danger); font-weight: 700; opacity: 0.55; }
+        table.sancus-table tr.is-line td.amount-revenue { color: #15803d; font-weight: 700; opacity: 0.55; }
+        table.sancus-table tr.is-line td.amount-zero { color: #9ca3af; font-weight: 400; opacity: 0.55; }
         table.sancus-table tr.is-line td.line-date { color: #c7cacd; font-weight: 400; font-size: 0.88em; white-space: nowrap; }
         table.sancus-table tr.is-line td.line-type-detail { color: #9ca3af; font-weight: 400; }
+        table.sancus-table tr.is-line td.unbooked-msg {
+            color: var(--kvt-muted);
+            font-weight: 400;
+            text-align: center;
+            font-style: italic;
+            opacity: 0.85;
+        }
         table.sancus-table .qty-hours,
         table.sancus-table .qty-hours-zone { cursor: help; }
         @media (min-width: 640px) {
@@ -499,6 +509,7 @@ try {
                                 $typeLabel = (string) ($row['type_label'] ?? '');
                                 $showHoursQty = $typeLabel === 'Uren' && ($isLine || ($qty !== null && !empty($row['show_type'])));
                                 $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
+                                $isUnbooked = $isLine && !empty($row['unbooked']);
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?php if ($isLine): ?>
@@ -516,15 +527,25 @@ try {
                                     <?php endif; ?>
                                     <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= $isLine ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
                                     <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"><?php
-                                        if ($isLine) {
+                                        if ($isLine && !$isUnbooked && $qty !== null) {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
-                                        } elseif ($qty !== null && !empty($row['show_type'])) {
+                                        } elseif (!$isLine && $qty !== null && !empty($row['show_type'])) {
                                             // Only show quantity totals on type groups (same unit)
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         }
                                     ?></td>
-                                    <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost', trim($hoursZoneClass)) ?>
-                                    <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
+                                    <?php if ($isUnbooked): ?>
+                                        <?php
+                                        $placeholderKey = (string) ($row['placeholder_key'] ?? 'unbooked');
+                                        $placeholderLoc = $placeholderKey === 'cancelled'
+                                            ? 'sancus.msg.cancelled'
+                                            : 'sancus.msg.unbooked';
+                                        ?>
+                                        <td class="unbooked-msg" colspan="2"><?= portal_h(LOC($placeholderLoc)) ?></td>
+                                    <?php else: ?>
+                                        <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost', trim($hoursZoneClass)) ?>
+                                        <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
