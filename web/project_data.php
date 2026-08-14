@@ -564,6 +564,41 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
 }
 
 /**
+ * Koppel werkorder-startdatum aan postenregels.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @param list<array{no:string,start_date?:string}> $workorders
+ * @return list<array<string,mixed>>
+ */
+function project_enrich_workorder_start_dates(array $lines, array $workorders): array
+{
+    $startByWorkOrder = [];
+    foreach ($workorders as $workorder) {
+        if (!is_array($workorder)) {
+            continue;
+        }
+        $workOrderNo = trim((string) ($workorder['no'] ?? ''));
+        if ($workOrderNo === '') {
+            continue;
+        }
+        $startByWorkOrder[$workOrderNo] = trim((string) ($workorder['start_date'] ?? ''));
+    }
+
+    foreach ($lines as &$line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $workOrderNo = trim((string) ($line['work_order_no'] ?? ''));
+        $line['work_order_start_date'] = $workOrderNo !== ''
+            ? (string) ($startByWorkOrder[$workOrderNo] ?? '')
+            : '';
+    }
+    unset($line);
+
+    return $lines;
+}
+
+/**
  * Pad naar gedeelde zoekgeschiedenis van contracten.
  */
 function project_search_history_path(): string
@@ -864,6 +899,7 @@ function project_fetch_contract_overview(
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
     $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
+    $lines = project_enrich_workorder_start_dates($lines, $workorders);
     $lines = project_enrich_details_names($company, $lines, $ttl);
     $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
 
@@ -943,6 +979,58 @@ function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
 }
 
 /**
+ * Merge identieke Materiaal- / Kilometers- / Gefactureerd-regels (zelfde No, datum, omschrijving).
+ *
+ * @param list<array<string,mixed>> $lines
+ * @return list<array<string,mixed>>
+ */
+function project_merge_identical_type_lines(string $typeLabel, array $lines): array
+{
+    static $mergeTypes = [
+        'Materiaal' => true,
+        'Kilometers' => true,
+        'Gefactureerd' => true,
+    ];
+
+    if (!isset($mergeTypes[$typeLabel]) || count($lines) < 2) {
+        return $lines;
+    }
+
+    $merged = [];
+    foreach ($lines as $line) {
+        if (!is_array($line) || !empty($line['unbooked'])) {
+            $merged[] = $line;
+            continue;
+        }
+
+        $articleNo = trim((string) ($line['article_no'] ?? ''));
+        if ($articleNo === '') {
+            $articleNo = trim((string) ($line['type_detail'] ?? ''));
+        }
+        $date = trim((string) ($line['posting_date'] ?? ''));
+        $description = trim((string) ($line['description'] ?? ''));
+        $key = $articleNo . "\0" . $date . "\0" . mb_strtolower($description);
+
+        if (!isset($merged[$key])) {
+            $merged[$key] = $line;
+            continue;
+        }
+
+        $qty = array_key_exists('quantity', $merged[$key]) && $merged[$key]['quantity'] !== null
+            ? (float) $merged[$key]['quantity']
+            : 0.0;
+        $addQty = array_key_exists('quantity', $line) && $line['quantity'] !== null
+            ? (float) $line['quantity']
+            : 0.0;
+        $merged[$key]['quantity'] = $qty + $addQty;
+        $merged[$key]['cost'] = (float) ($merged[$key]['cost'] ?? 0) + (float) ($line['cost'] ?? 0);
+        $merged[$key]['revenue'] = (float) ($merged[$key]['revenue'] ?? 0) + (float) ($line['revenue'] ?? 0);
+    }
+
+    return array_values($merged);
+}
+
+/**
  * Groepeer posten: Servicelocatie → Component → Project → Werkorder → Type.
  *
  * @param list<array<string,mixed>> $posten
@@ -1013,7 +1101,7 @@ function project_group_posten(array $posten): array
 
                     $types = [];
                     foreach ($typeKeys as $typeLabel) {
-                        $lines = $typeMap[$typeLabel];
+                        $lines = project_merge_identical_type_lines($typeLabel, $typeMap[$typeLabel]);
                         usort($lines, static function (array $a, array $b): int {
                             return ((int) ($a['entry_no'] ?? 0)) <=> ((int) ($b['entry_no'] ?? 0));
                         });
@@ -1024,8 +1112,18 @@ function project_group_posten(array $posten): array
                         ];
                     }
 
+                    $workorderLines = [];
+                    foreach ($typeMap as $typeLines) {
+                        foreach ($typeLines as $typeLine) {
+                            if (is_array($typeLine)) {
+                                $workorderLines[] = $typeLine;
+                            }
+                        }
+                    }
+
                     $workorders[] = [
                         'work_order_no' => $workOrderNo,
+                        'start_date' => project_first_nonempty_string($workorderLines, 'work_order_start_date'),
                         'types' => $types,
                     ];
                 }
@@ -1236,6 +1334,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'component_no' => '',
         'component_name' => '',
         'work_order_no' => '',
+        'work_order_start_date' => '',
         'type_label' => '',
     ];
     $show = [
@@ -1261,6 +1360,9 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         }
         if ($level === 'component') {
             $labels['component_name'] = (string) ($current['component_name'] ?? '');
+        }
+        if ($level === 'workorder') {
+            $labels['work_order_start_date'] = (string) ($current['start_date'] ?? '');
         }
         $show[$level] = true;
 
@@ -1292,6 +1394,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'component_no' => $labels['component_no'],
         'component_name' => $labels['component_name'],
         'work_order_no' => $labels['work_order_no'],
+        'work_order_start_date' => $show['workorder'] ? $labels['work_order_start_date'] : '',
         'type_label' => $labels['type_label'],
         'type_detail' => '',
         'show_project' => $show['project'],

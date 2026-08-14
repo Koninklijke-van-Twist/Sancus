@@ -417,6 +417,12 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         table.sancus-table tr.is-line td.amount-revenue { color: #15803d; font-weight: 700; opacity: 0.55; }
         table.sancus-table tr.is-line td.amount-zero { color: #9ca3af; font-weight: 400; opacity: 0.55; }
         table.sancus-table tr.is-line td.line-date { color: #c7cacd; font-weight: 400; font-size: 0.88em; white-space: nowrap; }
+        table.sancus-table tr.is-group td.workorder-start-date {
+            color: var(--kvt-text);
+            font-weight: 700;
+            font-size: 0.88em;
+            white-space: nowrap;
+        }
         table.sancus-table tr.is-line td.line-type-detail { color: #9ca3af; font-weight: 400; }
         table.sancus-table tr.is-line td.unbooked-msg {
             color: var(--kvt-muted);
@@ -614,6 +620,7 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 $isLine = $level === 'line';
                                 $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
                                 $postingDate = portal_format_date((string) ($row['posting_date'] ?? ''));
+                                $workOrderStartDate = portal_format_date((string) ($row['work_order_start_date'] ?? ''));
                                 $typeDetail = trim((string) ($row['type_detail'] ?? ''));
                                 $qty = $row['quantity'] ?? null;
                                 $typeLabel = (string) ($row['type_label'] ?? '');
@@ -621,10 +628,16 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
                                 $description = trim((string) ($row['description'] ?? ''));
                                 $isUnbooked = !empty($row['unbooked']);
+                                $showWorkOrderStart = !$isLine
+                                    && !empty($row['show_work_order'])
+                                    && empty($row['show_details'])
+                                    && $workOrderStartDate !== '';
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?php if ($isLine): ?>
                                         <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
+                                    <?php elseif ($showWorkOrderStart): ?>
+                                        <td class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></td>
                                     <?php else: ?>
                                         <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details']), (string) ($row['details_name'] ?? '')) ?>
                                     <?php endif; ?>
