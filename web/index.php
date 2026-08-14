@@ -232,6 +232,9 @@ $totalRevenue = 0.0;
 $totalProfit = 0.0;
 $totalProfitPct = null;
 $contractValue = null;
+$totalMaterial = 0.0;
+$totalHours = 0.0;
+$totalKilometers = 0.0;
 
 auth_set_current_company_context($company);
 
@@ -251,9 +254,13 @@ try {
             $view = 'search';
         } else {
             $totals = project_sum_amounts($lines);
+            $qtyByType = project_sum_quantities_by_type($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
             $totalRevenue = (float) ($totals['revenue'] ?? 0);
             $totalProfit = $totalRevenue - $totalCost;
+            $totalMaterial = (float) ($qtyByType['Materiaal'] ?? 0);
+            $totalHours = (float) ($qtyByType['Uren'] ?? 0);
+            $totalKilometers = (float) ($qtyByType['Kilometers'] ?? 0);
             $tableRows = project_flatten_grouped_rows($lines);
             $postenCount = count($lines);
             $view = 'posten';
@@ -336,10 +343,13 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             font-size: 0.88em;
         }
         @media (min-width: 640px) {
+            .sancus-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (min-width: 900px) {
             .sancus-meta { grid-template-columns: repeat(4, minmax(0, 1fr)); }
         }
-        @media (min-width: 1100px) {
-            .sancus-meta { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+        @media (min-width: 1300px) {
+            .sancus-meta { grid-template-columns: repeat(6, minmax(0, 1fr)); }
         }
         .sancus-muted { color: var(--kvt-muted); font-size: 0.92rem; }
         .sancus-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
@@ -538,6 +548,18 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></span>
                     <span class="sancus-kpi-value <?= portal_h($totalProfitPct === null ? 'amount-zero' : portal_amount_class((float) $totalProfitPct, 'profit')) ?>"><?= portal_h(portal_format_percent($totalProfitPct)) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.material')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalMaterial, 'Materiaal')) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.hours')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalHours, 'Uren')) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.kilometers')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
                 </div>
             </div>
 

@@ -1072,6 +1072,34 @@ function project_sum_amounts(array $lines): array
 }
 
 /**
+ * Sommeer aantallen per typelabel (Materiaal / Uren / Kilometers).
+ *
+ * @param list<array<string,mixed>> $lines
+ * @return array{Materiaal:float,Uren:float,Kilometers:float}
+ */
+function project_sum_quantities_by_type(array $lines): array
+{
+    $totals = [
+        'Materiaal' => 0.0,
+        'Uren' => 0.0,
+        'Kilometers' => 0.0,
+    ];
+
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $typeLabel = (string) ($line['type_label'] ?? '');
+        if (!isset($totals[$typeLabel])) {
+            continue;
+        }
+        $totals[$typeLabel] += (float) ($line['quantity'] ?? 0);
+    }
+
+    return $totals;
+}
+
+/**
  * Verzamel alle bladregels onder een type-/werkorder-/component-/details-/projectgroep.
  *
  * @param array<string,mixed> $node
