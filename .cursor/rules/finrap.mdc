@@ -20,6 +20,7 @@ alwaysApply: true
 - BC OData-helpers staan in `web/project_data.php`.
 - Project/posten-data altijd via functies in `web/project_data.php` ophalen.
 - Leidende BC-entities:
+  - `AppMaintenanceContracts` — contractwaarde via `KVT_Total_Sales_Price`
   - `AppProjecten` — alle projecten zoeken via `KVT_Contract_No`
   - `ProjectPosten` — via `Job_No` van AppProjecten én extra `Job_No`s uit AppWerkorders; optioneel filter op `Posting_Date`
   - `ContractPlanningsregels` — via `Contract_No`; `Main_Entity` = servicelocatie; types Factuur/Credietnota uit geboekte nummers; optioneel filter op `Planned_Invoice_Date`

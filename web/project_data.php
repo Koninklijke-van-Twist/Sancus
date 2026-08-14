@@ -13,6 +13,7 @@ const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Description,Start_Date,Contract_No,Status';
+const SANCUS_CONTRACT_SELECT = 'Contract_No,KVT_Total_Sales_Price';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
 const SANCUS_NIGHTLY_CACHE_TTL = 90000;
 const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
@@ -463,6 +464,30 @@ function project_fetch_workorders_for_contract(string $company, string $contract
 }
 
 /**
+ * Haal contractwaarde op via AppMaintenanceContracts.
+ */
+function project_fetch_contract_value(string $company, string $contractNo, int $ttl = 3600): ?float
+{
+    $escaped = project_escape_odata_string($contractNo);
+    if ($escaped === '') {
+        return null;
+    }
+
+    $rows = project_try_fetch_rows($company, 'AppMaintenanceContracts', [
+        '$select' => SANCUS_CONTRACT_SELECT,
+        '$filter' => "Contract_No eq '" . $escaped . "'",
+        '$top' => '1',
+    ], $ttl);
+
+    $row = is_array($rows[0] ?? null) ? $rows[0] : null;
+    if ($row === null || !array_key_exists('KVT_Total_Sales_Price', $row)) {
+        return null;
+    }
+
+    return (float) $row['KVT_Total_Sales_Price'];
+}
+
+/**
  * Vul ontbrekende (nog niet geboekte) werkorders aan als placeholder-regels.
  *
  * @param list<array<string,mixed>> $lines
@@ -677,7 +702,8 @@ function project_collect_job_nos(array $projects, array $workorders): array
  *   lines:list<array<string,mixed>>,
  *   workorders:list<array<string,mixed>>,
  *   customer_name:string,
- *   customer_no:string
+ *   customer_no:string,
+ *   contract_value:?float
  * }
  */
 function project_fetch_contract_overview(
@@ -694,6 +720,7 @@ function project_fetch_contract_overview(
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
     $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
+    $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
 
     $customerName = '';
     $customerNo = '';
@@ -718,6 +745,7 @@ function project_fetch_contract_overview(
         'workorders' => $workorders,
         'customer_name' => $customerName,
         'customer_no' => $customerNo,
+        'contract_value' => $contractValue,
     ];
 }
 

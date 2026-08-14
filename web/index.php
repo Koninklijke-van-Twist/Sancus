@@ -231,6 +231,7 @@ $totalCost = 0.0;
 $totalRevenue = 0.0;
 $totalProfit = 0.0;
 $totalProfitPct = null;
+$contractValue = null;
 
 auth_set_current_company_context($company);
 
@@ -242,6 +243,7 @@ try {
         $lines = $overview['lines'];
         $customerName = (string) ($overview['customer_name'] ?? '');
         $customerNo = (string) ($overview['customer_no'] ?? '');
+        $contractValue = array_key_exists('contract_value', $overview) ? $overview['contract_value'] : null;
         $projectCount = count($projects);
 
         if ($lines === [] && $projects === []) {
@@ -496,6 +498,9 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo)) ?></span>
+                    <?php if ($contractValue !== null): ?>
+                        <span class="sancus-kpi-sub"><?= portal_h(portal_format_amount((float) $contractValue)) ?></span>
+                    <?php endif; ?>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.projects')) ?></span>
