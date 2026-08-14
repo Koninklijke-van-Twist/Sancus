@@ -564,15 +564,15 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
 }
 
 /**
- * Koppel werkorder-startdatum aan postenregels.
+ * Koppel werkorder-startdatum en -status aan postenregels.
  *
  * @param list<array<string,mixed>> $lines
- * @param list<array{no:string,start_date?:string}> $workorders
+ * @param list<array{no:string,start_date?:string,status?:string}> $workorders
  * @return list<array<string,mixed>>
  */
 function project_enrich_workorder_start_dates(array $lines, array $workorders): array
 {
-    $startByWorkOrder = [];
+    $metaByWorkOrder = [];
     foreach ($workorders as $workorder) {
         if (!is_array($workorder)) {
             continue;
@@ -581,7 +581,10 @@ function project_enrich_workorder_start_dates(array $lines, array $workorders): 
         if ($workOrderNo === '') {
             continue;
         }
-        $startByWorkOrder[$workOrderNo] = trim((string) ($workorder['start_date'] ?? ''));
+        $metaByWorkOrder[$workOrderNo] = [
+            'start_date' => trim((string) ($workorder['start_date'] ?? '')),
+            'status' => trim((string) ($workorder['status'] ?? '')),
+        ];
     }
 
     foreach ($lines as &$line) {
@@ -589,9 +592,9 @@ function project_enrich_workorder_start_dates(array $lines, array $workorders): 
             continue;
         }
         $workOrderNo = trim((string) ($line['work_order_no'] ?? ''));
-        $line['work_order_start_date'] = $workOrderNo !== ''
-            ? (string) ($startByWorkOrder[$workOrderNo] ?? '')
-            : '';
+        $meta = $workOrderNo !== '' ? ($metaByWorkOrder[$workOrderNo] ?? null) : null;
+        $line['work_order_start_date'] = is_array($meta) ? (string) ($meta['start_date'] ?? '') : '';
+        $line['work_order_status'] = is_array($meta) ? (string) ($meta['status'] ?? '') : '';
     }
     unset($line);
 
@@ -1125,6 +1128,7 @@ function project_group_posten(array $posten): array
                     $workorders[] = [
                         'work_order_no' => $workOrderNo,
                         'start_date' => project_first_nonempty_string($workorderLines, 'work_order_start_date'),
+                        'status' => project_first_nonempty_string($workorderLines, 'work_order_status'),
                         'types' => $types,
                     ];
                 }
@@ -1336,6 +1340,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'component_name' => '',
         'work_order_no' => '',
         'work_order_start_date' => '',
+        'work_order_status' => '',
         'type_label' => '',
     ];
     $show = [
@@ -1364,6 +1369,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         }
         if ($level === 'workorder') {
             $labels['work_order_start_date'] = (string) ($current['start_date'] ?? '');
+            $labels['work_order_status'] = (string) ($current['status'] ?? '');
         }
         $show[$level] = true;
 
@@ -1396,6 +1402,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'component_name' => $labels['component_name'],
         'work_order_no' => $labels['work_order_no'],
         'work_order_start_date' => $show['workorder'] ? $labels['work_order_start_date'] : '',
+        'work_order_status' => $show['workorder'] ? $labels['work_order_status'] : '',
         'type_label' => $labels['type_label'],
         'type_detail' => '',
         'show_project' => $show['project'],
