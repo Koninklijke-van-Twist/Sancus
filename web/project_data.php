@@ -12,7 +12,7 @@ require_once __DIR__ . '/odata.php';
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
-const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Description,Start_Date,Contract_No,Status';
+const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Code,Task_Description,Start_Date,Contract_No,Status';
 const SANCUS_CONTRACT_SELECT = 'Contract_No,KVT_Total_Sales_Price';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
@@ -431,7 +431,7 @@ function project_fetch_planning_for_contract(string $company, string $contractNo
 /**
  * Normaliseer een AppWerkorders-regel.
  *
- * @return array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,description:string,start_date:string,status:string}
+ * @return array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,task_code:string,description:string,start_date:string,status:string}
  */
 function project_normalize_workorder_row(array $row): array
 {
@@ -442,6 +442,7 @@ function project_normalize_workorder_row(array $row): array
         'component_no' => trim((string) ($row['Component_No'] ?? '')),
         'component_name' => trim((string) ($row['Component_Description'] ?? '')),
         'job_no' => trim((string) ($row['Job_No'] ?? '')),
+        'task_code' => trim((string) ($row['Task_Code'] ?? '')),
         'description' => trim((string) ($row['Task_Description'] ?? '')),
         'start_date' => trim((string) ($row['Start_Date'] ?? '')),
         'status' => trim((string) ($row['Status'] ?? '')),
@@ -451,7 +452,7 @@ function project_normalize_workorder_row(array $row): array
 /**
  * Haal werkorders op voor een contractnummer.
  *
- * @return list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,description:string,start_date:string,status:string}>
+ * @return list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,task_code:string,description:string,start_date:string,status:string}>
  */
 function project_fetch_workorders_for_contract(string $company, string $contractNo, int $ttl = 3600): array
 {
@@ -506,9 +507,10 @@ function project_fetch_contract_value(string $company, string $contractNo, int $
 
 /**
  * Vul ontbrekende (nog niet geboekte) werkorders aan als placeholder-regels.
+ * Taakcode IA (Intern Algemeen) komt als Uren-regel met €0 i.p.v. "Nog niet geboekt".
  *
  * @param list<array<string,mixed>> $lines
- * @param list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,description:string,start_date:string,status:string}> $workorders
+ * @param list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,task_code?:string,description:string,start_date:string,status:string}> $workorders
  * @return list<array<string,mixed>>
  */
 function project_supplement_unbooked_workorders(array $lines, array $workorders): array
@@ -530,33 +532,61 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
             continue;
         }
 
-        $status = (string) ($workorder['status'] ?? '');
-        $placeholderKey = (strcasecmp($status, 'Geannuleerd') === 0 || strcasecmp($status, 'Cancelled') === 0)
-            ? 'cancelled'
-            : 'unbooked';
+        $taskCode = trim((string) ($workorder['task_code'] ?? ''));
+        $isInternAlgemeen = strcasecmp($taskCode, 'IA') === 0;
 
-        $lines[] = [
-            'entry_no' => 0,
-            'job_no' => (string) ($workorder['job_no'] ?? ''),
-            'entry_type' => '',
-            'details' => (string) ($workorder['details'] ?? ''),
-            'details_name' => (string) ($workorder['details_name'] ?? ''),
-            'component_no' => (string) ($workorder['component_no'] ?? ''),
-            'component_name' => (string) ($workorder['component_name'] ?? ''),
-            'work_order_no' => $workOrderNo,
-            'bc_type' => '',
-            'work_type_code' => '',
-            'article_no' => '',
-            'type_label' => '',
-            'type_detail' => '',
-            'description' => (string) ($workorder['description'] ?? ''),
-            'posting_date' => (string) ($workorder['start_date'] ?? ''),
-            'quantity' => null,
-            'cost' => 0.0,
-            'revenue' => 0.0,
-            'unbooked' => true,
-            'placeholder_key' => $placeholderKey,
-        ];
+        if ($isInternAlgemeen) {
+            $lines[] = [
+                'entry_no' => 0,
+                'job_no' => (string) ($workorder['job_no'] ?? ''),
+                'entry_type' => '',
+                'details' => (string) ($workorder['details'] ?? ''),
+                'details_name' => (string) ($workorder['details_name'] ?? ''),
+                'component_no' => (string) ($workorder['component_no'] ?? ''),
+                'component_name' => (string) ($workorder['component_name'] ?? ''),
+                'work_order_no' => $workOrderNo,
+                'bc_type' => '',
+                'work_type_code' => 'IA',
+                'article_no' => '',
+                'type_label' => 'Uren',
+                'type_detail' => 'IA',
+                'description' => (string) ($workorder['description'] ?? ''),
+                'posting_date' => (string) ($workorder['start_date'] ?? ''),
+                'quantity' => 0.0,
+                'cost' => 0.0,
+                'revenue' => 0.0,
+                'unbooked' => false,
+                'placeholder_key' => '',
+            ];
+        } else {
+            $status = (string) ($workorder['status'] ?? '');
+            $placeholderKey = (strcasecmp($status, 'Geannuleerd') === 0 || strcasecmp($status, 'Cancelled') === 0)
+                ? 'cancelled'
+                : 'unbooked';
+
+            $lines[] = [
+                'entry_no' => 0,
+                'job_no' => (string) ($workorder['job_no'] ?? ''),
+                'entry_type' => '',
+                'details' => (string) ($workorder['details'] ?? ''),
+                'details_name' => (string) ($workorder['details_name'] ?? ''),
+                'component_no' => (string) ($workorder['component_no'] ?? ''),
+                'component_name' => (string) ($workorder['component_name'] ?? ''),
+                'work_order_no' => $workOrderNo,
+                'bc_type' => '',
+                'work_type_code' => '',
+                'article_no' => '',
+                'type_label' => '',
+                'type_detail' => '',
+                'description' => (string) ($workorder['description'] ?? ''),
+                'posting_date' => (string) ($workorder['start_date'] ?? ''),
+                'quantity' => null,
+                'cost' => 0.0,
+                'revenue' => 0.0,
+                'unbooked' => true,
+                'placeholder_key' => $placeholderKey,
+            ];
+        }
         $seen[$workOrderNo] = true;
     }
 
@@ -595,6 +625,41 @@ function project_enrich_workorder_start_dates(array $lines, array $workorders): 
         $meta = $workOrderNo !== '' ? ($metaByWorkOrder[$workOrderNo] ?? null) : null;
         $line['work_order_start_date'] = is_array($meta) ? (string) ($meta['start_date'] ?? '') : '';
         $line['work_order_status'] = is_array($meta) ? (string) ($meta['status'] ?? '') : '';
+    }
+    unset($line);
+
+    return $lines;
+}
+
+/**
+ * Koppel projectstatus aan postenregels via Job_No.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @param list<array{no:string,status?:string}> $projects
+ * @return list<array<string,mixed>>
+ */
+function project_enrich_project_status(array $lines, array $projects): array
+{
+    $statusByProject = [];
+    foreach ($projects as $project) {
+        if (!is_array($project)) {
+            continue;
+        }
+        $projectNo = trim((string) ($project['no'] ?? ''));
+        if ($projectNo === '') {
+            continue;
+        }
+        $statusByProject[$projectNo] = trim((string) ($project['status'] ?? ''));
+    }
+
+    foreach ($lines as &$line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $projectNo = trim((string) ($line['job_no'] ?? ''));
+        $line['project_status'] = $projectNo !== ''
+            ? (string) ($statusByProject[$projectNo] ?? '')
+            : '';
     }
     unset($line);
 
@@ -903,6 +968,7 @@ function project_fetch_contract_overview(
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
     $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
     $lines = project_enrich_workorder_start_dates($lines, $workorders);
+    $lines = project_enrich_project_status($lines, $projects);
     $lines = project_enrich_details_names($company, $lines, $ttl);
     $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
 
@@ -1135,6 +1201,10 @@ function project_group_posten(array $posten): array
 
                 $projectGroups[] = [
                     'project_no' => $projectNo,
+                    'status' => project_first_nonempty_string(
+                        project_collect_lines(['workorders' => $workorders]),
+                        'project_status'
+                    ),
                     'workorders' => $workorders,
                 ];
             }
@@ -1334,6 +1404,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
 {
     $labels = [
         'project_no' => '',
+        'project_status' => '',
         'details' => '',
         'details_name' => '',
         'component_no' => '',
@@ -1367,6 +1438,9 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         if ($level === 'component') {
             $labels['component_name'] = (string) ($current['component_name'] ?? '');
         }
+        if ($level === 'project') {
+            $labels['project_status'] = (string) ($current['status'] ?? '');
+        }
         if ($level === 'workorder') {
             $labels['work_order_start_date'] = (string) ($current['start_date'] ?? '');
             $labels['work_order_status'] = (string) ($current['status'] ?? '');
@@ -1396,6 +1470,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'kind' => 'group',
         'level' => $topLevel,
         'project_no' => $labels['project_no'],
+        'project_status' => $show['project'] ? $labels['project_status'] : '',
         'details' => $labels['details'],
         'details_name' => $labels['details_name'],
         'component_no' => $labels['component_no'],

@@ -670,7 +670,11 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                         <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details']), (string) ($row['details_name'] ?? '')) ?>
                                     <?php endif; ?>
                                     <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component']), (string) ($row['component_name'] ?? ''), 36, true) ?>
-                                    <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
+                                    <?= portal_group_cell(
+                                        (string) ($row['project_no'] ?? ''),
+                                        !empty($row['show_project']),
+                                        (string) ($row['project_status'] ?? '')
+                                    ) ?>
                                     <?= portal_group_cell(
                                         (string) ($row['work_order_no'] ?? ''),
                                         !empty($row['show_work_order']),
