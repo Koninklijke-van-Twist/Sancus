@@ -423,6 +423,23 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             font-size: 0.88em;
             white-space: nowrap;
         }
+        table.sancus-table tr.is-group td.workorder-dates {
+            white-space: nowrap;
+            vertical-align: top;
+        }
+        table.sancus-table tr.is-group td.workorder-dates .workorder-start-date {
+            display: block;
+            color: var(--kvt-text);
+            font-weight: 700;
+            font-size: 0.88em;
+        }
+        table.sancus-table tr.is-group td.workorder-dates .line-date {
+            display: block;
+            margin-top: 2px;
+            color: #c7cacd;
+            font-weight: 400;
+            font-size: 0.88em;
+        }
         table.sancus-table tr.is-line td.line-type-detail { color: #9ca3af; font-weight: 400; }
         table.sancus-table tr.is-line td.unbooked-msg {
             color: var(--kvt-muted);
@@ -628,14 +645,25 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
                                 $description = trim((string) ($row['description'] ?? ''));
                                 $isUnbooked = !empty($row['unbooked']);
+                                // Werkorder + 1 samengevouwen regel: start (vet) + boekingsdatum (subtiel)
+                                $showDualWorkOrderDates = !$isLine
+                                    && !empty($row['show_work_order'])
+                                    && $workOrderStartDate !== ''
+                                    && $postingDate !== '';
                                 $showWorkOrderStart = !$isLine
                                     && !empty($row['show_work_order'])
                                     && empty($row['show_details'])
-                                    && $workOrderStartDate !== '';
+                                    && $workOrderStartDate !== ''
+                                    && $postingDate === '';
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?php if ($isLine): ?>
                                         <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
+                                    <?php elseif ($showDualWorkOrderDates): ?>
+                                        <td class="workorder-dates">
+                                            <span class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></span>
+                                            <span class="line-date"><?= portal_h($postingDate) ?></span>
+                                        </td>
                                     <?php elseif ($showWorkOrderStart): ?>
                                         <td class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></td>
                                     <?php else: ?>

@@ -979,7 +979,7 @@ function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
 }
 
 /**
- * Merge identieke Materiaal- / Kilometers- / Gefactureerd-regels (zelfde No, datum, omschrijving).
+ * Merge identieke Materiaal- / Kilometers- / Gefactureerd- / Uren-regels (zelfde No/code, datum, omschrijving).
  *
  * @param list<array<string,mixed>> $lines
  * @return list<array<string,mixed>>
@@ -990,6 +990,7 @@ function project_merge_identical_type_lines(string $typeLabel, array $lines): ar
         'Materiaal' => true,
         'Kilometers' => true,
         'Gefactureerd' => true,
+        'Uren' => true,
     ];
 
     if (!isset($mergeTypes[$typeLabel]) || count($lines) < 2) {
@@ -1420,8 +1421,13 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
             }
         }
 
-        // Enkele regel onder Kilometers / Materiaal / Gefactureerd valt samen met de type-totaalregel
-        static $collapseSingleLineTypes = ['Kilometers' => true, 'Materiaal' => true, 'Gefactureerd' => true];
+        // Enkele regel onder Kilometers / Materiaal / Gefactureerd / Uren valt samen met de type-totaalregel
+        static $collapseSingleLineTypes = [
+            'Kilometers' => true,
+            'Materiaal' => true,
+            'Gefactureerd' => true,
+            'Uren' => true,
+        ];
         if (isset($collapseSingleLineTypes[$labels['type_label']]) && count($typeLines) === 1) {
             $line = $typeLines[0];
             $idx = count($rows) - 1;
