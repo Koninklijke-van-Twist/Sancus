@@ -13,6 +13,11 @@ const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Description,Start_Date,Contract_No,Status';
+const SANCUS_HOURLY_CACHE_TTL = 3900;
+const SANCUS_NIGHTLY_CACHE_TTL = 90000;
+const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
+const SANCUS_NIGHTLY_SEARCH_MAX_AGE = 2592000;
+const SANCUS_SEARCH_HISTORY_MAX_AGE = SANCUS_NIGHTLY_SEARCH_MAX_AGE;
 
 /**
  * Functies
@@ -514,6 +519,254 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
     }
 
     return $lines;
+}
+
+/**
+ * Pad naar gedeelde zoekgeschiedenis van contracten.
+ */
+function project_search_history_path(): string
+{
+    return __DIR__ . '/data/contract_searches.json';
+}
+
+/**
+ * Registreer een contractzoekopdracht voor cache-warming (hourly/nightly).
+ */
+function project_record_contract_search(string $company, string $contractNo): void
+{
+    $company = trim($company);
+    $contractNo = trim($contractNo);
+    if ($company === '' || $contractNo === '') {
+        return;
+    }
+
+    $path = project_search_history_path();
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+
+    $now = time();
+    $cutoff = $now - SANCUS_SEARCH_HISTORY_MAX_AGE;
+    $entries = [];
+
+    if (is_file($path)) {
+        $decoded = json_decode((string) @file_get_contents($path), true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $rowCompany = trim((string) ($row['company'] ?? ''));
+                $rowContract = trim((string) ($row['contract'] ?? ''));
+                $rowAt = (int) ($row['at'] ?? 0);
+                if ($rowCompany === '' || $rowContract === '' || $rowAt < $cutoff) {
+                    continue;
+                }
+                $key = strtolower($rowCompany) . "\n" . strtolower($rowContract);
+                $entries[$key] = [
+                    'company' => $rowCompany,
+                    'contract' => $rowContract,
+                    'at' => $rowAt,
+                ];
+            }
+        }
+    }
+
+    $key = strtolower($company) . "\n" . strtolower($contractNo);
+    $entries[$key] = [
+        'company' => $company,
+        'contract' => $contractNo,
+        'at' => $now,
+    ];
+
+    uasort($entries, static function (array $a, array $b): int {
+        return ((int) ($b['at'] ?? 0)) <=> ((int) ($a['at'] ?? 0));
+    });
+
+    @file_put_contents(
+        $path,
+        json_encode(array_values($entries), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+        LOCK_EX
+    );
+}
+
+/**
+ * Contractzoekopdrachten van de afgelopen maand.
+ *
+ * @return list<array{company:string,contract:string,at:int}>
+ */
+function project_recent_contract_searches(int $maxAgeSeconds = SANCUS_SEARCH_HISTORY_MAX_AGE): array
+{
+    $path = project_search_history_path();
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $decoded = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $cutoff = time() - max(1, $maxAgeSeconds);
+    $entries = [];
+    foreach ($decoded as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $company = trim((string) ($row['company'] ?? ''));
+        $contract = trim((string) ($row['contract'] ?? ''));
+        $at = (int) ($row['at'] ?? 0);
+        if ($company === '' || $contract === '' || $at < $cutoff) {
+            continue;
+        }
+        $entries[] = [
+            'company' => $company,
+            'contract' => $contract,
+            'at' => $at,
+        ];
+    }
+
+    return $entries;
+}
+
+/**
+ * Unieke Job_No-lijst uit projecten en werkorders.
+ *
+ * @param list<array<string,mixed>> $projects
+ * @param list<array<string,mixed>> $workorders
+ * @return list<string>
+ */
+function project_collect_job_nos(array $projects, array $workorders): array
+{
+    $jobNos = [];
+    $seen = [];
+
+    foreach ($projects as $project) {
+        if (!is_array($project)) {
+            continue;
+        }
+        $jobNo = trim((string) ($project['no'] ?? ''));
+        if ($jobNo === '' || isset($seen[$jobNo])) {
+            continue;
+        }
+        $seen[$jobNo] = true;
+        $jobNos[] = $jobNo;
+    }
+
+    foreach ($workorders as $workorder) {
+        if (!is_array($workorder)) {
+            continue;
+        }
+        $jobNo = trim((string) ($workorder['job_no'] ?? ''));
+        if ($jobNo === '' || isset($seen[$jobNo])) {
+            continue;
+        }
+        $seen[$jobNo] = true;
+        $jobNos[] = $jobNo;
+    }
+
+    return $jobNos;
+}
+
+/**
+ * Volledige contract-dataset: projecten, posten (incl. via werkorder-jobs), planning en placeholders.
+ *
+ * @return array{
+ *   projects:list<array<string,mixed>>,
+ *   lines:list<array<string,mixed>>,
+ *   workorders:list<array<string,mixed>>,
+ *   customer_name:string,
+ *   customer_no:string
+ * }
+ */
+function project_fetch_contract_overview(
+    string $company,
+    string $contractNo,
+    string $dateFrom = '',
+    string $dateTo = '',
+    int $ttl = 3600
+): array {
+    $projects = project_fetch_by_contract_no($company, $contractNo, $ttl);
+    $workorders = project_fetch_workorders_for_contract($company, $contractNo, $ttl);
+    $jobNos = project_collect_job_nos($projects, $workorders);
+
+    $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
+    $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
+
+    $customerName = '';
+    $customerNo = '';
+    foreach ($projects as $projectRow) {
+        if (!is_array($projectRow)) {
+            continue;
+        }
+        if ($customerName === '' && trim((string) ($projectRow['customer_name'] ?? '')) !== '') {
+            $customerName = trim((string) $projectRow['customer_name']);
+        }
+        if ($customerNo === '' && trim((string) ($projectRow['customer_no'] ?? '')) !== '') {
+            $customerNo = trim((string) $projectRow['customer_no']);
+        }
+        if ($customerName !== '' && $customerNo !== '') {
+            break;
+        }
+    }
+
+    return [
+        'projects' => $projects,
+        'lines' => $lines,
+        'workorders' => $workorders,
+        'customer_name' => $customerName,
+        'customer_no' => $customerNo,
+    ];
+}
+
+/**
+ * Warm OData-cache voor recente contractzoekopdrachten.
+ *
+ * @return array{
+ *   searches:int,
+ *   warmed:list<array{company:string,contract:string,projects:int,lines:int,workorders:int}>,
+ *   failed:list<array{company:string,contract:string,error:string}>
+ * }
+ */
+function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
+{
+    $searches = project_recent_contract_searches($maxAgeSeconds);
+    $warmed = [];
+    $failed = [];
+
+    foreach ($searches as $search) {
+        $company = trim((string) ($search['company'] ?? ''));
+        $contract = trim((string) ($search['contract'] ?? ''));
+        if ($company === '' || $contract === '') {
+            continue;
+        }
+
+        try {
+            auth_set_current_company_context($company);
+            $overview = project_fetch_contract_overview($company, $contract, '', '', $ttl);
+            $warmed[] = [
+                'company' => $company,
+                'contract' => $contract,
+                'projects' => count($overview['projects'] ?? []),
+                'lines' => count($overview['lines'] ?? []),
+                'workorders' => count($overview['workorders'] ?? []),
+            ];
+        } catch (Throwable $error) {
+            $failed[] = [
+                'company' => $company,
+                'contract' => $contract,
+                'error' => $error->getMessage(),
+            ];
+        }
+    }
+
+    return [
+        'searches' => count($searches),
+        'warmed' => $warmed,
+        'failed' => $failed,
+    ];
 }
 
 /**

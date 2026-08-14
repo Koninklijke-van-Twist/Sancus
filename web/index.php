@@ -236,41 +236,18 @@ auth_set_current_company_context($company);
 
 try {
     if ($contractNo !== '') {
-        $projects = project_fetch_by_contract_no($company, $contractNo);
+        project_record_contract_search($company, $contractNo);
+        $overview = project_fetch_contract_overview($company, $contractNo, $dateFrom, $dateTo);
+        $projects = $overview['projects'];
+        $lines = $overview['lines'];
+        $customerName = (string) ($overview['customer_name'] ?? '');
+        $customerNo = (string) ($overview['customer_no'] ?? '');
+        $projectCount = count($projects);
 
-        if ($projects === []) {
-            $planningOnly = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
-            $workorders = project_fetch_workorders_for_contract($company, $contractNo);
-            $lines = project_supplement_unbooked_workorders($planningOnly, $workorders);
-            if ($lines === []) {
-                $errorKey = 'sancus.error.project_not_found';
-                $view = 'search';
-            } else {
-                $totals = project_sum_amounts($lines);
-                $totalCost = (float) ($totals['cost'] ?? 0);
-                $totalRevenue = (float) ($totals['revenue'] ?? 0);
-                $totalProfit = $totalRevenue - $totalCost;
-                $tableRows = project_flatten_grouped_rows($lines);
-                $postenCount = count($lines);
-                $view = 'posten';
-            }
+        if ($lines === [] && $projects === []) {
+            $errorKey = 'sancus.error.project_not_found';
+            $view = 'search';
         } else {
-            $projectCount = count($projects);
-            $jobNos = [];
-            foreach ($projects as $projectRow) {
-                $jobNos[] = (string) ($projectRow['no'] ?? '');
-                if ($customerName === '' && trim((string) ($projectRow['customer_name'] ?? '')) !== '') {
-                    $customerName = trim((string) $projectRow['customer_name']);
-                }
-                if ($customerNo === '' && trim((string) ($projectRow['customer_no'] ?? '')) !== '') {
-                    $customerNo = trim((string) $projectRow['customer_no']);
-                }
-            }
-
-            $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo);
-            $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo);
-            $workorders = project_fetch_workorders_for_contract($company, $contractNo);
-            $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
             $totals = project_sum_amounts($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
             $totalRevenue = (float) ($totals['revenue'] ?? 0);

@@ -6,4 +6,5 @@ web/cache/
 BC Webservices.txt
 
 web/data/user_prefs/
+web/data/contract_searches.json
 data/user_prefs/
