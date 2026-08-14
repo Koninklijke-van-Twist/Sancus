@@ -164,20 +164,21 @@ function portal_amount_class(float $amount, string $kind): string
     return $amount < 0 ? 'amount-cost' : 'amount-revenue';
 }
 
-function portal_group_cell(string $value, bool $active, string $name = '', int $nameMaxLen = 36): string
+function portal_group_cell(string $value, bool $active, string $name = '', int $nameMaxLen = 36, bool $overflowName = false): string
 {
     if (!$active) {
         return '<td class="group-empty"></td>';
     }
 
     $code = portal_display_value($value);
-    $html = '<td class="group-cell"><span class="group-cell-code">' . portal_h($code) . '</span>';
+    $cellClass = $overflowName ? 'group-cell group-cell-overflow' : 'group-cell';
+    $html = '<td class="' . $cellClass . '"><span class="group-cell-code">' . portal_h($code) . '</span>';
 
     $name = trim($name);
     if ($name !== '' && $value !== '') {
         $titleAttr = '';
         $nameDisplay = $name;
-        if (mb_strlen($name) > $nameMaxLen) {
+        if (!$overflowName && $nameMaxLen > 0 && mb_strlen($name) > $nameMaxLen) {
             $nameDisplay = rtrim(mb_substr($name, 0, $nameMaxLen - 1)) . '…';
             $titleAttr = ' title="' . portal_h($name) . '"';
         }
@@ -386,6 +387,23 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             font-weight: 400;
             color: var(--kvt-muted);
             line-height: 1.25;
+        }
+        table.sancus-table td.group-cell-overflow {
+            overflow: visible;
+            position: relative;
+            z-index: 2;
+        }
+        table.sancus-table td.group-cell-overflow .group-cell-name {
+            white-space: nowrap;
+            width: max-content;
+            max-width: none;
+            position: relative;
+            z-index: 2;
+            pointer-events: none;
+        }
+        table.sancus-table td.group-empty {
+            position: relative;
+            z-index: 0;
         }
         table.sancus-table tr.is-group-details { background: #f0f7fb; }
         table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
@@ -609,7 +627,7 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                     <?php else: ?>
                                         <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details']), (string) ($row['details_name'] ?? '')) ?>
                                     <?php endif; ?>
-                                    <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component']), (string) ($row['component_name'] ?? '')) ?>
+                                    <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component']), (string) ($row['component_name'] ?? ''), 36, true) ?>
                                     <?= portal_group_cell((string) ($row['project_no'] ?? ''), !empty($row['show_project'])) ?>
                                     <?= portal_group_cell((string) ($row['work_order_no'] ?? ''), !empty($row['show_work_order'])) ?>
                                     <?php if ($isLine): ?>
