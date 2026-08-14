@@ -115,7 +115,7 @@ function project_normalize_project_row(array $row): array
     ];
 }
 
-function project_line_type_label(string $type, string $workTypeCode): string
+function project_line_base_type_label(string $type, string $workTypeCode): string
 {
     if (strcasecmp($type, 'Artikel') === 0 || strcasecmp($type, 'Item') === 0) {
         return 'Materiaal';
@@ -128,14 +128,24 @@ function project_line_type_label(string $type, string $workTypeCode): string
     return 'Uren';
 }
 
+function project_line_type_label(string $type, string $workTypeCode, string $entryType = ''): string
+{
+    if (strcasecmp($entryType, 'Verkoop') === 0 || strcasecmp($entryType, 'Sale') === 0) {
+        return 'Gefactureerd';
+    }
+
+    return project_line_base_type_label($type, $workTypeCode);
+}
+
 function project_line_type_sort_key(string $label): int
 {
     static $order = [
-        'Materiaal' => 0,
-        'Kilometers' => 1,
-        'Uren' => 2,
-        'Factuur' => 3,
-        'Credietnota' => 4,
+        'Gefactureerd' => 0,
+        'Materiaal' => 1,
+        'Kilometers' => 2,
+        'Uren' => 3,
+        'Factuur' => 4,
+        'Credietnota' => 5,
     ];
 
     return $order[$label] ?? 99;
@@ -179,7 +189,8 @@ function project_normalize_posten_row(array $row): array
     $type = trim((string) ($row['Type'] ?? ''));
     $workTypeCode = trim((string) ($row['Work_Type_Code'] ?? ''));
     $articleNo = trim((string) ($row['No'] ?? ''));
-    $typeLabel = project_line_type_label($type, $workTypeCode);
+    $baseTypeLabel = project_line_base_type_label($type, $workTypeCode);
+    $typeLabel = project_line_type_label($type, $workTypeCode, $entryType);
     $cost = (float) ($row['Total_Cost_LCY'] ?? 0);
     // Line_Amount_LCY komt als negatief uit BC; we tonen opbrengsten positief
     $revenue = -1.0 * (float) ($row['Line_Amount_LCY'] ?? 0);
@@ -204,7 +215,7 @@ function project_normalize_posten_row(array $row): array
         'work_type_code' => $workTypeCode,
         'article_no' => $articleNo,
         'type_label' => $typeLabel,
-        'type_detail' => project_line_type_detail($typeLabel, $workTypeCode, $articleNo),
+        'type_detail' => project_line_type_detail($baseTypeLabel, $workTypeCode, $articleNo),
         'description' => trim((string) ($row['Description'] ?? '')),
         'posting_date' => trim((string) ($row['Posting_Date'] ?? '')),
         'quantity' => (float) ($row['Quantity'] ?? 0),

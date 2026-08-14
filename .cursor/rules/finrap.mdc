@@ -30,7 +30,8 @@ alwaysApply: true
   - `web/hourly.php` (GET) — contracten van de afgelopen 3 dagen, TTL tot volgende hourly
   - `web/nightly.php` (GET) — contracten van de afgelopen 30 dagen, TTL tot volgende nightly
 - Zoekgeschiedenis: `web/data/contract_searches.json` (gitignored)
-- Tabelgroepering: Servicelocatie → Component → Project → Werkorder → Type; aaneengesloten single-child groepen op één regel met totalen; split zodra een level meerdere subgroepen heeft
+- Tabelgroepering: Servicelocatie → Component → Project → Werkorder → Type (Gefactureerd vóór Materiaal/Kilometers/Uren); aaneengesloten single-child groepen op één regel met totalen; split zodra een level meerdere subgroepen heeft
+- Type: `Entry_Type` Verkoop/Sale → Gefactureerd; anders Materiaal/Kilometers/Uren zoals voorheen; Gebruik houdt alleen kosten, Verkoop alleen opbrengsten
 - Bedragen als euro: kosten rood, opbrengsten groen (negatieve opbrengsten rood); detailregels subtieler, groepsbedragen normaal
 - Regeldetails: Aantallen vóór Kosten; bij Uren werksoort / bij Materiaal artikelnummer in Type-kolom; boekings-/planningsdatum subtiel in Servicelocatie-kolom
 
