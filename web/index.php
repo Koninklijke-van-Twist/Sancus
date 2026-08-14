@@ -155,13 +155,19 @@ function portal_amount_class(float $amount, string $kind): string
     return $amount < 0 ? 'amount-cost' : 'amount-revenue';
 }
 
-function portal_group_cell(string $value, bool $active): string
+function portal_group_cell(string $value, bool $active, int $maxLen = 42): string
 {
     if (!$active) {
         return '<td class="group-empty"></td>';
     }
 
-    return '<td class="group-cell">' . portal_h(portal_display_value($value)) . '</td>';
+    $display = portal_display_value($value);
+    if ($value !== '' && mb_strlen($value) > $maxLen) {
+        $short = rtrim(mb_substr($value, 0, $maxLen - 1)) . '…';
+        return '<td class="group-cell" title="' . portal_h($value) . '">' . portal_h($short) . '</td>';
+    }
+
+    return '<td class="group-cell">' . portal_h($display) . '</td>';
 }
 
 /**
