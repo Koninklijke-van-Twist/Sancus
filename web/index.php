@@ -518,10 +518,7 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo)) ?></span>
-                </div>
-                <div class="sancus-kpi">
-                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.projects')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h((string) $projectCount) ?></span>
+                    <span class="sancus-kpi-sub"><?= portal_h((string) $projectCount) ?> <?= portal_h(LOC('sancus.meta.projects_count')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.customer')) ?></span>
@@ -535,10 +532,6 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                             }
                         }
                     ?></span>
-                </div>
-                <div class="sancus-kpi">
-                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.lines')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h((string) $postenCount) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.cost')) ?></span>
@@ -561,18 +554,18 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.material')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalMaterial, 'Materiaal')) ?></span>
-                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalMaterialMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalMaterialMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalMaterialMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalMaterialMoney)) ?></span>
+                    <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalMaterial, 'Materiaal')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.hours')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalHours, 'Uren')) ?></span>
-                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalHoursMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalHoursMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalHoursMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalHoursMoney)) ?></span>
+                    <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalHours, 'Uren')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.kilometers')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
-                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalKilometersMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalKilometersMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
+                    <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
                 </div>
             </div>
 

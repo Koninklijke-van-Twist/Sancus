@@ -202,6 +202,11 @@ function project_normalize_posten_row(array $row): array
         $cost = 0.0;
     }
 
+    $quantity = (float) ($row['Quantity'] ?? 0);
+    if ($typeLabel === 'Gefactureerd') {
+        $quantity = abs($quantity);
+    }
+
     return [
         'entry_no' => (int) ($row['Entry_No'] ?? 0),
         'job_no' => trim((string) ($row['Job_No'] ?? '')),
@@ -218,7 +223,7 @@ function project_normalize_posten_row(array $row): array
         'type_detail' => project_line_type_detail($baseTypeLabel, $workTypeCode, $articleNo),
         'description' => trim((string) ($row['Description'] ?? '')),
         'posting_date' => trim((string) ($row['Posting_Date'] ?? '')),
-        'quantity' => (float) ($row['Quantity'] ?? 0),
+        'quantity' => $quantity,
         'cost' => $cost,
         'revenue' => $revenue,
     ];
