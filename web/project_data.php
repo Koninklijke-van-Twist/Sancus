@@ -166,23 +166,6 @@ function project_first_nonempty_string(array $lines, string $key): string
     return '';
 }
 
-/**
- * Weergave "code - naam" (alleen code als naam ontbreekt).
- */
-function project_format_code_name(string $code, string $name): string
-{
-    $code = trim($code);
-    $name = trim($name);
-    if ($code === '') {
-        return '';
-    }
-    if ($name === '') {
-        return $code;
-    }
-
-    return $code . ' - ' . $name;
-}
-
 function project_normalize_posten_row(array $row): array
 {
     $entryType = trim((string) ($row['Entry_Type'] ?? ''));
@@ -844,8 +827,10 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
         'kind' => 'group',
         'level' => $topLevel,
         'project_no' => $labels['project_no'],
-        'details' => project_format_code_name($labels['details'], $labels['details_name']),
-        'component_no' => project_format_code_name($labels['component_no'], $labels['component_name']),
+        'details' => $labels['details'],
+        'details_name' => $labels['details_name'],
+        'component_no' => $labels['component_no'],
+        'component_name' => $labels['component_name'],
         'work_order_no' => $labels['work_order_no'],
         'type_label' => $labels['type_label'],
         'type_detail' => '',
