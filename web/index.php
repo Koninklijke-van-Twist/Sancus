@@ -112,6 +112,15 @@ function portal_format_date(string $value): string
     return $value;
 }
 
+function portal_format_percent(?float $percent): string
+{
+    if ($percent === null) {
+        return '—';
+    }
+
+    return number_format($percent, 1, ',', '.') . '%';
+}
+
 function portal_display_value(string $value): string
 {
     return $value !== '' ? $value : '—';
@@ -213,6 +222,7 @@ $customerNo = '';
 $totalCost = 0.0;
 $totalRevenue = 0.0;
 $totalProfit = 0.0;
+$totalProfitPct = null;
 
 auth_set_current_company_context($company);
 
@@ -267,6 +277,10 @@ try {
     $view = 'search';
 }
 
+if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
+    $totalProfitPct = ($totalProfit / $totalRevenue) * 100.0;
+}
+
 ?><!DOCTYPE html>
 <html lang="<?= portal_h(getHtmlLang()) ?>">
 <head>
@@ -294,13 +308,52 @@ try {
         .sancus-btn { background: var(--kvt-main-blue); color: #fff; border-color: var(--kvt-main-blue); cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
         .sancus-btn-secondary { background: #fff; color: var(--kvt-main-blue); }
         .sancus-alert { border: 1px solid #fecaca; background: #fef2f2; color: var(--kvt-danger); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
-        .sancus-meta { display: grid; gap: 8px; margin-bottom: 12px; }
-        .sancus-meta-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
-        .sancus-meta-label { color: var(--kvt-muted); min-width: 110px; }
-        .sancus-meta-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
-        .sancus-meta-amount.amount-cost { color: var(--kvt-danger); }
-        .sancus-meta-amount.amount-revenue { color: #15803d; }
-        .sancus-meta-amount.amount-zero { color: #9ca3af; }
+        .sancus-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0 0 16px;
+        }
+        .sancus-kpi {
+            border: 1px solid var(--kvt-line);
+            border-radius: 12px;
+            background: #f8fafc;
+            padding: 12px 14px;
+            display: grid;
+            gap: 6px;
+            min-width: 0;
+        }
+        .sancus-kpi-label {
+            color: var(--kvt-muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .sancus-kpi-value {
+            color: var(--kvt-text);
+            font-weight: 700;
+            font-size: 1.05rem;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+            font-variant-numeric: tabular-nums;
+        }
+        .sancus-kpi-value.amount-cost { color: var(--kvt-danger); }
+        .sancus-kpi-value.amount-revenue { color: #15803d; }
+        .sancus-kpi-value.amount-zero { color: #9ca3af; }
+        .sancus-kpi-sub {
+            display: block;
+            margin-top: 2px;
+            font-weight: 600;
+            color: var(--kvt-muted);
+            font-size: 0.88em;
+        }
+        @media (min-width: 640px) {
+            .sancus-meta { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1100px) {
+            .sancus-meta { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+        }
         .sancus-muted { color: var(--kvt-muted); font-size: 0.92rem; }
         .sancus-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
         .sancus-list-item { border: 1px solid var(--kvt-line); border-radius: 10px; padding: 12px 14px; }
@@ -446,40 +499,46 @@ try {
         <section class="sancus-card">
             <h2><?= portal_h(LOC('sancus.section.posten')) ?></h2>
             <div class="sancus-meta">
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
-                    <span><?= portal_h($contractNo) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo)) ?></span>
                 </div>
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.projects')) ?></span>
-                    <span><?= portal_h((string) $projectCount) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.projects')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h((string) $projectCount) ?></span>
                 </div>
-                <?php if ($customerName !== '' || $customerNo !== ''): ?>
-                    <div class="sancus-meta-row">
-                        <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.customer')) ?></span>
-                        <span>
-                            <?= portal_h($customerName) ?>
-                            <?php if ($customerNo !== ''): ?>
-                                (<?= portal_h($customerNo) ?>)
-                            <?php endif; ?>
-                        </span>
-                    </div>
-                <?php endif; ?>
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.lines')) ?></span>
-                    <span><?= portal_h((string) $postenCount) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.customer')) ?></span>
+                    <span class="sancus-kpi-value"><?php
+                        if ($customerName === '' && $customerNo === '') {
+                            echo portal_h('—');
+                        } else {
+                            echo portal_h($customerName !== '' ? $customerName : $customerNo);
+                            if ($customerName !== '' && $customerNo !== '') {
+                                echo '<span class="sancus-kpi-sub">' . portal_h($customerNo) . '</span>';
+                            }
+                        }
+                    ?></span>
                 </div>
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.cost')) ?></span>
-                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalCost, 'cost')) ?>"><?= portal_h(portal_format_amount($totalCost)) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.lines')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h((string) $postenCount) ?></span>
                 </div>
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.revenue')) ?></span>
-                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalRevenue, 'revenue')) ?>"><?= portal_h(portal_format_amount($totalRevenue)) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.cost')) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalCost, 'cost')) ?>"><?= portal_h(portal_format_amount($totalCost)) ?></span>
                 </div>
-                <div class="sancus-meta-row">
-                    <span class="sancus-meta-label"><?= portal_h(LOC('sancus.meta.profit')) ?></span>
-                    <span class="sancus-meta-amount <?= portal_h(portal_amount_class($totalProfit, 'profit')) ?>"><?= portal_h(portal_format_amount($totalProfit)) ?></span>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.revenue')) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalRevenue, 'revenue')) ?>"><?= portal_h(portal_format_amount($totalRevenue)) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.profit')) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalProfit, 'profit')) ?>"><?= portal_h(portal_format_amount($totalProfit)) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h($totalProfitPct === null ? 'amount-zero' : portal_amount_class((float) $totalProfitPct, 'profit')) ?>"><?= portal_h(portal_format_percent($totalProfitPct)) ?></span>
                 </div>
             </div>
 
