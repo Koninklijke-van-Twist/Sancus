@@ -235,6 +235,9 @@ $contractValue = null;
 $totalMaterial = 0.0;
 $totalHours = 0.0;
 $totalKilometers = 0.0;
+$totalMaterialMoney = 0.0;
+$totalHoursMoney = 0.0;
+$totalKilometersMoney = 0.0;
 
 auth_set_current_company_context($company);
 
@@ -254,13 +257,16 @@ try {
             $view = 'search';
         } else {
             $totals = project_sum_amounts($lines);
-            $qtyByType = project_sum_quantities_by_type($lines);
+            $byType = project_sum_by_type($lines);
             $totalCost = (float) ($totals['cost'] ?? 0);
             $totalRevenue = (float) ($totals['revenue'] ?? 0);
             $totalProfit = $totalRevenue - $totalCost;
-            $totalMaterial = (float) ($qtyByType['Materiaal'] ?? 0);
-            $totalHours = (float) ($qtyByType['Uren'] ?? 0);
-            $totalKilometers = (float) ($qtyByType['Kilometers'] ?? 0);
+            $totalMaterial = (float) ($byType['Materiaal']['quantity'] ?? 0);
+            $totalHours = (float) ($byType['Uren']['quantity'] ?? 0);
+            $totalKilometers = (float) ($byType['Kilometers']['quantity'] ?? 0);
+            $totalMaterialMoney = (float) ($byType['Materiaal']['revenue'] ?? 0) - (float) ($byType['Materiaal']['cost'] ?? 0);
+            $totalHoursMoney = (float) ($byType['Uren']['revenue'] ?? 0) - (float) ($byType['Uren']['cost'] ?? 0);
+            $totalKilometersMoney = (float) ($byType['Kilometers']['revenue'] ?? 0) - (float) ($byType['Kilometers']['cost'] ?? 0);
             $tableRows = project_flatten_grouped_rows($lines);
             $postenCount = count($lines);
             $view = 'posten';
@@ -341,7 +347,11 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             font-weight: 600;
             color: var(--kvt-muted);
             font-size: 0.88em;
+            font-variant-numeric: tabular-nums;
         }
+        .sancus-kpi-sub.amount-cost { color: var(--kvt-danger); }
+        .sancus-kpi-sub.amount-revenue { color: #15803d; }
+        .sancus-kpi-sub.amount-zero { color: #9ca3af; }
         @media (min-width: 640px) {
             .sancus-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
@@ -552,14 +562,17 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.material')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalMaterial, 'Materiaal')) ?></span>
+                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalMaterialMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalMaterialMoney)) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.hours')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalHours, 'Uren')) ?></span>
+                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalHoursMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalHoursMoney)) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.kilometers')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
+                    <span class="sancus-kpi-sub <?= portal_h(portal_amount_class($totalKilometersMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
                 </div>
             </div>
 

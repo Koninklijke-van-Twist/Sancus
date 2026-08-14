@@ -1072,17 +1072,21 @@ function project_sum_amounts(array $lines): array
 }
 
 /**
- * Sommeer aantallen per typelabel (Materiaal / Uren / Kilometers).
+ * Sommeer aantallen, kosten en opbrengsten per typelabel (Materiaal / Uren / Kilometers).
  *
  * @param list<array<string,mixed>> $lines
- * @return array{Materiaal:float,Uren:float,Kilometers:float}
+ * @return array{
+ *   Materiaal:array{quantity:float,cost:float,revenue:float},
+ *   Uren:array{quantity:float,cost:float,revenue:float},
+ *   Kilometers:array{quantity:float,cost:float,revenue:float}
+ * }
  */
-function project_sum_quantities_by_type(array $lines): array
+function project_sum_by_type(array $lines): array
 {
     $totals = [
-        'Materiaal' => 0.0,
-        'Uren' => 0.0,
-        'Kilometers' => 0.0,
+        'Materiaal' => ['quantity' => 0.0, 'cost' => 0.0, 'revenue' => 0.0],
+        'Uren' => ['quantity' => 0.0, 'cost' => 0.0, 'revenue' => 0.0],
+        'Kilometers' => ['quantity' => 0.0, 'cost' => 0.0, 'revenue' => 0.0],
     ];
 
     foreach ($lines as $line) {
@@ -1093,7 +1097,9 @@ function project_sum_quantities_by_type(array $lines): array
         if (!isset($totals[$typeLabel])) {
             continue;
         }
-        $totals[$typeLabel] += (float) ($line['quantity'] ?? 0);
+        $totals[$typeLabel]['quantity'] += (float) ($line['quantity'] ?? 0);
+        $totals[$typeLabel]['cost'] += (float) ($line['cost'] ?? 0);
+        $totals[$typeLabel]['revenue'] += (float) ($line['revenue'] ?? 0);
     }
 
     return $totals;
