@@ -25,6 +25,7 @@ alwaysApply: true
   - `ProjectPosten` — via `Job_No` van AppProjecten én extra `Job_No`s uit AppWerkorders; optioneel filter op `Posting_Date`
   - `ContractPlanningsregels` — via `Contract_No`; `Main_Entity` = servicelocatie; types Factuur/Credietnota uit geboekte nummers; optioneel filter op `Planned_Invoice_Date`
   - `AppWerkorders` — via `Contract_No`; levert extra projectnummers én placeholderregels (“Nog niet geboekt” / “Geannuleerd”)
+  - `LVS_MainEntityCard` — fallback servicelocatienaam via `Description` als die op post/planning/WO ontbreekt
 - Cache:
   - `web/hourly.php` (GET) — contracten van de afgelopen 3 dagen, TTL tot volgende hourly
   - `web/nightly.php` (GET) — contracten van de afgelopen 30 dagen, TTL tot volgende nightly

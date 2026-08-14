@@ -14,6 +14,7 @@ const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Cus
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Description,Start_Date,Contract_No,Status';
 const SANCUS_CONTRACT_SELECT = 'Contract_No,KVT_Total_Sales_Price';
+const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
 const SANCUS_NIGHTLY_CACHE_TTL = 90000;
 const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
@@ -695,6 +696,133 @@ function project_collect_job_nos(array $projects, array $workorders): array
 }
 
 /**
+ * Haal servicelocatienamen op via LVS_MainEntityCard.
+ *
+ * @param list<string> $codes
+ * @return array<string,string> code => description
+ */
+function project_fetch_main_entity_names(string $company, array $codes, int $ttl = 3600): array
+{
+    $names = [];
+    $unique = [];
+    foreach ($codes as $code) {
+        $code = trim((string) $code);
+        if ($code === '' || isset($unique[$code])) {
+            continue;
+        }
+        $unique[$code] = true;
+    }
+
+    if ($unique === []) {
+        return [];
+    }
+
+    $batch = [];
+    foreach (array_keys($unique) as $code) {
+        $batch[] = $code;
+        if (count($batch) < 20) {
+            continue;
+        }
+        foreach (project_fetch_main_entity_names_batch($company, $batch, $ttl) as $key => $value) {
+            $names[$key] = $value;
+        }
+        $batch = [];
+    }
+
+    if ($batch !== []) {
+        foreach (project_fetch_main_entity_names_batch($company, $batch, $ttl) as $key => $value) {
+            $names[$key] = $value;
+        }
+    }
+
+    return $names;
+}
+
+/**
+ * @param list<string> $codes
+ * @return array<string,string>
+ */
+function project_fetch_main_entity_names_batch(string $company, array $codes, int $ttl = 3600): array
+{
+    $parts = [];
+    foreach ($codes as $code) {
+        $escaped = project_escape_odata_string($code);
+        if ($escaped === '') {
+            continue;
+        }
+        $parts[] = "No eq '" . $escaped . "'";
+    }
+    if ($parts === []) {
+        return [];
+    }
+
+    $rows = project_try_fetch_rows($company, 'LVS_MainEntityCard', [
+        '$select' => SANCUS_MAIN_ENTITY_SELECT,
+        '$filter' => implode(' or ', $parts),
+    ], $ttl);
+
+    $names = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $no = trim((string) ($row['No'] ?? ''));
+        $description = trim((string) ($row['Description'] ?? ''));
+        if ($no !== '' && $description !== '') {
+            $names[$no] = $description;
+        }
+    }
+
+    return $names;
+}
+
+/**
+ * Vul ontbrekende servicelocatienamen aan via LVS_MainEntityCard.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @return list<array<string,mixed>>
+ */
+function project_enrich_details_names(string $company, array $lines, int $ttl = 3600): array
+{
+    $missing = [];
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $code = trim((string) ($line['details'] ?? ''));
+        $name = trim((string) ($line['details_name'] ?? ''));
+        if ($code !== '' && $name === '') {
+            $missing[$code] = true;
+        }
+    }
+
+    if ($missing === []) {
+        return $lines;
+    }
+
+    $names = project_fetch_main_entity_names($company, array_keys($missing), $ttl);
+    if ($names === []) {
+        return $lines;
+    }
+
+    foreach ($lines as &$line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $code = trim((string) ($line['details'] ?? ''));
+        if ($code === '' || trim((string) ($line['details_name'] ?? '')) !== '') {
+            continue;
+        }
+        if (isset($names[$code])) {
+            $line['details_name'] = $names[$code];
+        }
+    }
+    unset($line);
+
+    return $lines;
+}
+
+/**
  * Volledige contract-dataset: projecten, posten (incl. via werkorder-jobs), planning en placeholders.
  *
  * @return array{
@@ -720,6 +848,7 @@ function project_fetch_contract_overview(
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
     $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
+    $lines = project_enrich_details_names($company, $lines, $ttl);
     $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
 
     $customerName = '';

@@ -498,9 +498,6 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo)) ?></span>
-                    <?php if ($contractValue !== null): ?>
-                        <span class="sancus-kpi-sub"><?= portal_h(portal_format_amount((float) $contractValue)) ?></span>
-                    <?php endif; ?>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.projects')) ?></span>
@@ -530,6 +527,9 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.revenue')) ?></span>
                     <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalRevenue, 'revenue')) ?>"><?= portal_h(portal_format_amount($totalRevenue)) ?></span>
+                    <?php if ($contractValue !== null): ?>
+                        <span class="sancus-kpi-sub"><?= portal_h(LOC('sancus.meta.contract')) ?>: <?= portal_h(portal_format_amount((float) $contractValue)) ?></span>
+                    <?php endif; ?>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.profit')) ?></span>
