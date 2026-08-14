@@ -619,7 +619,8 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 $typeLabel = (string) ($row['type_label'] ?? '');
                                 $showHoursQty = $typeLabel === 'Uren' && ($isLine || ($qty !== null && !empty($row['show_type'])));
                                 $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
-                                $isUnbooked = $isLine && !empty($row['unbooked']);
+                                $description = trim((string) ($row['description'] ?? ''));
+                                $isUnbooked = !empty($row['unbooked']);
                                 ?>
                                 <tr class="<?= portal_h($rowClass) ?>">
                                     <?php if ($isLine): ?>
@@ -633,13 +634,18 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                     <?php if ($isLine): ?>
                                         <td class="line-type-detail"><?= $typeDetail !== '' ? portal_h($typeDetail) : '' ?></td>
                                     <?php else: ?>
-                                        <?= portal_group_cell((string) ($row['type_label'] ?? ''), !empty($row['show_type'])) ?>
+                                        <?= portal_group_cell(
+                                            (string) ($row['type_label'] ?? ''),
+                                            !empty($row['show_type']),
+                                            // Subtiel artikelnummer (No) onder Materiaal / Gefactureerd bij samengevouwen enkele regel
+                                            $typeDetail
+                                        ) ?>
                                     <?php endif; ?>
-                                    <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= $isLine ? portal_h(portal_display_value((string) ($row['description'] ?? ''))) : '' ?></td>
+                                    <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= ($isLine || $description !== '') ? portal_h(portal_display_value($description)) : '' ?></td>
                                     <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"><?php
                                         if ($isLine && !$isUnbooked && $qty !== null) {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
-                                        } elseif (!$isLine && $qty !== null && !empty($row['show_type'])) {
+                                        } elseif (!$isLine && $qty !== null && !empty($row['show_type']) && !$isUnbooked) {
                                             // Only show quantity totals on type groups (same unit)
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         }

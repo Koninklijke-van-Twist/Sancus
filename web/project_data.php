@@ -1310,10 +1310,27 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
     ];
 
     if ($level === 'type') {
+        $typeLines = [];
         foreach (($current['lines'] ?? []) as $line) {
-            if (!is_array($line)) {
-                continue;
+            if (is_array($line)) {
+                $typeLines[] = $line;
             }
+        }
+
+        // Enkele regel onder Kilometers / Materiaal / Gefactureerd valt samen met de type-totaalregel
+        static $collapseSingleLineTypes = ['Kilometers' => true, 'Materiaal' => true, 'Gefactureerd' => true];
+        if (isset($collapseSingleLineTypes[$labels['type_label']]) && count($typeLines) === 1) {
+            $line = $typeLines[0];
+            $idx = count($rows) - 1;
+            $rows[$idx]['type_detail'] = (string) ($line['type_detail'] ?? '');
+            $rows[$idx]['description'] = (string) ($line['description'] ?? '');
+            $rows[$idx]['posting_date'] = (string) ($line['posting_date'] ?? '');
+            $rows[$idx]['unbooked'] = !empty($line['unbooked']);
+            $rows[$idx]['placeholder_key'] = (string) ($line['placeholder_key'] ?? 'unbooked');
+            return;
+        }
+
+        foreach ($typeLines as $line) {
             $rows[] = [
                 'kind' => 'line',
                 'level' => 'line',
