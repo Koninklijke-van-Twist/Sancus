@@ -149,6 +149,25 @@ function portal_amount_cell(float $amount, string $kind, string $extraClass = ''
         . '</td>';
 }
 
+function portal_profit_cell(float $cost, float $revenue, bool $show): string
+{
+    if (!$show) {
+        return '<td class="num profit-empty"></td>';
+    }
+
+    $profit = $revenue - $cost;
+    $classes = 'num profit-cell ' . portal_amount_class($profit, 'profit');
+    $html = '<td class="' . portal_h(trim($classes)) . '">';
+    $html .= '<span class="profit-amount">' . portal_h(portal_format_amount($profit)) . '</span>';
+
+    if (abs($revenue) >= 0.00001) {
+        $pct = (int) round(($profit / $revenue) * 100.0);
+        $html .= '<span class="profit-pct">' . portal_h((string) $pct . '%') . '</span>';
+    }
+
+    return $html . '</td>';
+}
+
 function portal_amount_class(float $amount, string $kind): string
 {
     if (abs($amount) < 0.00001) {
@@ -164,15 +183,21 @@ function portal_amount_class(float $amount, string $kind): string
     return $amount < 0 ? 'amount-cost' : 'amount-revenue';
 }
 
-function portal_group_cell(string $value, bool $active, string $name = '', int $nameMaxLen = 36, bool $overflowName = false): string
-{
+function portal_group_cell(
+    string $value,
+    bool $active,
+    string $name = '',
+    int $nameMaxLen = 36,
+    bool $overflowName = false,
+    string $extraClass = ''
+): string {
     if (!$active) {
         return '<td class="group-empty"></td>';
     }
 
     $code = portal_display_value($value);
-    $cellClass = $overflowName ? 'group-cell group-cell-overflow' : 'group-cell';
-    $html = '<td class="' . $cellClass . '"><span class="group-cell-code">' . portal_h($code) . '</span>';
+    $cellClass = trim(($overflowName ? 'group-cell group-cell-overflow' : 'group-cell') . ' ' . $extraClass);
+    $html = '<td class="' . portal_h($cellClass) . '"><span class="group-cell-code">' . portal_h($code) . '</span>';
 
     $name = trim($name);
     if ($name !== '' && $value !== '') {
@@ -367,7 +392,17 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         .sancus-list-item { border: 1px solid var(--kvt-line); border-radius: 10px; padding: 12px 14px; }
         .sancus-list-item a { color: var(--kvt-main-blue); text-decoration: none; font-weight: 700; }
         .sancus-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        table.sancus-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 960px; }
+        .sancus-table-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 0 0 10px;
+        }
+        .sancus-table-toolbar .sancus-btn {
+            padding: 8px 12px;
+            font-size: 0.88rem;
+        }
+        table.sancus-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 1040px; }
         table.sancus-table th, table.sancus-table td { border-bottom: 1px solid var(--kvt-line); padding: 10px 8px; text-align: left; vertical-align: top; }
         table.sancus-table th { color: var(--kvt-muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
         table.sancus-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -375,7 +410,8 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table tr.is-group td.amount-cost,
-        table.sancus-table tr.is-group td.amount-revenue { opacity: 1; font-weight: 700; }
+        table.sancus-table tr.is-group td.amount-revenue,
+        table.sancus-table tr.is-group td.profit-cell { opacity: 1; font-weight: 700; }
         table.sancus-table tr.is-group td.amount-zero { opacity: 1; font-weight: 400; }
         table.sancus-table tr.is-group td.num-qty { opacity: 1; font-weight: 600; }
         table.sancus-table tr.is-group td.group-cell { font-weight: 700; color: var(--kvt-text); }
@@ -404,6 +440,36 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         table.sancus-table td.group-empty {
             position: relative;
             z-index: 0;
+        }
+        table.sancus-table td.profit-cell {
+            text-align: right;
+        }
+        table.sancus-table td.profit-cell .profit-amount {
+            display: block;
+        }
+        table.sancus-table td.profit-cell .profit-pct {
+            display: block;
+            margin-top: 2px;
+            font-size: 0.78em;
+            font-weight: 400;
+            color: var(--kvt-muted);
+            line-height: 1.2;
+        }
+        table.sancus-table tr.is-details-header.has-details-children .is-details-toggle {
+            cursor: pointer;
+        }
+        table.sancus-table tr.is-details-header.has-details-children.is-collapsed .is-details-toggle .group-cell-code::after {
+            content: ' ▸';
+            font-weight: 400;
+            color: var(--kvt-muted);
+        }
+        table.sancus-table tr.is-details-header.has-details-children:not(.is-collapsed) .is-details-toggle .group-cell-code::after {
+            content: ' ▾';
+            font-weight: 400;
+            color: var(--kvt-muted);
+        }
+        table.sancus-table tr.is-details-child.is-collapsed-row {
+            display: none;
         }
         table.sancus-table tr.is-group-details { background: #f0f7fb; }
         table.sancus-table tr.is-group-details td { border-top: 2px solid var(--kvt-line); }
@@ -613,8 +679,12 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             <?php if ($tableRows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.empty.posten')) ?></p>
             <?php else: ?>
+                <div class="sancus-table-toolbar">
+                    <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-collapse-all"><?= portal_h(LOC('sancus.btn.collapse_all')) ?></button>
+                    <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-expand-all"><?= portal_h(LOC('sancus.btn.expand_all')) ?></button>
+                </div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table">
+                    <table class="sancus-table" id="sancus-posten-table">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.col.details')) ?></th>
@@ -626,16 +696,28 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 <th class="num"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
                                 <th class="num"><?= portal_h(LOC('sancus.col.cost')) ?></th>
                                 <th class="num"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
+                                <th class="num"><?= portal_h(LOC('sancus.col.profit')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($tableRows as $row): ?>
-                                <?php
+                            <?php
+                            $detailsGroupId = 0;
+                            $currentDetailsGroup = 0;
+                            foreach ($tableRows as $row):
                                 $kind = (string) ($row['kind'] ?? 'line');
                                 $level = (string) ($row['level'] ?? 'line');
                                 $isGroup = $kind === 'group';
                                 $isLine = $level === 'line';
+                                $isDetailsHeader = $isGroup && !empty($row['show_details']);
+                                if ($isDetailsHeader) {
+                                    $currentDetailsGroup = ++$detailsGroupId;
+                                }
                                 $rowClass = $isGroup ? 'is-group is-group-' . $level : 'is-line';
+                                if ($isDetailsHeader) {
+                                    $rowClass .= ' is-details-header';
+                                } elseif ($currentDetailsGroup > 0) {
+                                    $rowClass .= ' is-details-child';
+                                }
                                 $postingDate = portal_format_date((string) ($row['posting_date'] ?? ''));
                                 $workOrderStartDate = portal_format_date((string) ($row['work_order_start_date'] ?? ''));
                                 $typeDetail = trim((string) ($row['type_detail'] ?? ''));
@@ -645,6 +727,14 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                 $hoursZoneClass = $showHoursQty ? ' qty-hours-zone' : '';
                                 $description = trim((string) ($row['description'] ?? ''));
                                 $isUnbooked = !empty($row['unbooked']);
+                                $rowCost = (float) ($row['cost'] ?? 0);
+                                $rowRevenue = (float) ($row['revenue'] ?? 0);
+                                $showProfit = !$isLine && (
+                                    !empty($row['show_details'])
+                                    || !empty($row['show_component'])
+                                    || !empty($row['show_project'])
+                                    || !empty($row['show_work_order'])
+                                );
                                 // Werkorder + 1 samengevouwen regel: start (vet) + boekingsdatum (subtiel)
                                 $showDualWorkOrderDates = !$isLine
                                     && !empty($row['show_work_order'])
@@ -655,19 +745,28 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                     && empty($row['show_details'])
                                     && $workOrderStartDate !== ''
                                     && $postingDate === '';
+                                $detailsToggleClass = $isDetailsHeader ? ' is-details-toggle' : '';
                                 ?>
-                                <tr class="<?= portal_h($rowClass) ?>">
+                                <tr class="<?= portal_h($rowClass) ?>"<?php if ($currentDetailsGroup > 0): ?> data-details-group="<?= (int) $currentDetailsGroup ?>"<?php endif; ?>>
                                     <?php if ($isLine): ?>
                                         <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
                                     <?php elseif ($showDualWorkOrderDates): ?>
-                                        <td class="workorder-dates">
+                                        <td class="workorder-dates<?= portal_h($detailsToggleClass) ?>">
                                             <span class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></span>
                                             <span class="line-date"><?= portal_h($postingDate) ?></span>
                                         </td>
                                     <?php elseif ($showWorkOrderStart): ?>
-                                        <td class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></td>
+                                        <td class="workorder-start-date<?= portal_h($detailsToggleClass) ?>"><?= portal_h($workOrderStartDate) ?></td>
                                     <?php else: ?>
-                                        <?= portal_group_cell((string) ($row['details'] ?? ''), !empty($row['show_details']), (string) ($row['details_name'] ?? '')) ?>
+                                        <?= portal_group_cell(
+                                            (string) ($row['details'] ?? ''),
+                                            !empty($row['show_details']),
+                                            (string) ($row['details_name'] ?? ''),
+                                            36,
+                                            // Overflow alleen als component niet op dezelfde regel staat
+                                            empty($row['show_component']),
+                                            trim($detailsToggleClass)
+                                        ) ?>
                                     <?php endif; ?>
                                     <?= portal_group_cell((string) ($row['component_no'] ?? ''), !empty($row['show_component']), (string) ($row['component_name'] ?? ''), 36, true) ?>
                                     <?= portal_group_cell(
@@ -706,10 +805,11 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                             ? 'sancus.msg.cancelled'
                                             : 'sancus.msg.unbooked';
                                         ?>
-                                        <td class="unbooked-msg" colspan="2"><?= portal_h(LOC($placeholderLoc)) ?></td>
+                                        <td class="unbooked-msg" colspan="3"><?= portal_h(LOC($placeholderLoc)) ?></td>
                                     <?php else: ?>
-                                        <?= portal_amount_cell((float) ($row['cost'] ?? 0), 'cost', trim($hoursZoneClass)) ?>
-                                        <?= portal_amount_cell((float) ($row['revenue'] ?? 0), 'revenue') ?>
+                                        <?= portal_amount_cell($rowCost, 'cost', trim($hoursZoneClass)) ?>
+                                        <?= portal_amount_cell($rowRevenue, 'revenue') ?>
+                                        <?= portal_profit_cell($rowCost, $rowRevenue, $showProfit) ?>
                                     <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
@@ -881,6 +981,91 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         }
         stopHoverToggle();
     });
+})();
+
+(function () {
+    var table = document.getElementById('sancus-posten-table');
+    if (!table) {
+        return;
+    }
+
+    function setGroupCollapsed(groupId, collapsed) {
+        var header = table.querySelector('tr.is-details-header[data-details-group="' + groupId + '"]');
+        var children = table.querySelectorAll('tr.is-details-child[data-details-group="' + groupId + '"]');
+        if (!header || !children.length) {
+            return;
+        }
+        if (collapsed) {
+            header.classList.add('is-collapsed');
+        } else {
+            header.classList.remove('is-collapsed');
+        }
+        for (var i = 0; i < children.length; i++) {
+            if (collapsed) {
+                children[i].classList.add('is-collapsed-row');
+            } else {
+                children[i].classList.remove('is-collapsed-row');
+            }
+        }
+    }
+
+    function setAllCollapsed(collapsed) {
+        var headers = table.querySelectorAll('tr.is-details-header[data-details-group]');
+        for (var i = 0; i < headers.length; i++) {
+            var groupId = headers[i].getAttribute('data-details-group');
+            if (groupId) {
+                setGroupCollapsed(groupId, collapsed);
+            }
+        }
+    }
+
+    var headers = table.querySelectorAll('tr.is-details-header[data-details-group]');
+    for (var h = 0; h < headers.length; h++) {
+        var gid = headers[h].getAttribute('data-details-group');
+        if (!gid) {
+            continue;
+        }
+        if (table.querySelector('tr.is-details-child[data-details-group="' + gid + '"]')) {
+            headers[h].classList.add('has-details-children');
+        }
+    }
+
+    table.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        var toggle = target.closest('.is-details-toggle');
+        if (!toggle) {
+            return;
+        }
+        var header = toggle.closest('tr.is-details-header');
+        if (!header) {
+            return;
+        }
+        var groupId = header.getAttribute('data-details-group');
+        if (!groupId) {
+            return;
+        }
+        var children = table.querySelectorAll('tr.is-details-child[data-details-group="' + groupId + '"]');
+        if (!children.length) {
+            return;
+        }
+        setGroupCollapsed(groupId, !header.classList.contains('is-collapsed'));
+    });
+
+    var collapseAll = document.getElementById('sancus-collapse-all');
+    var expandAll = document.getElementById('sancus-expand-all');
+    if (collapseAll) {
+        collapseAll.addEventListener('click', function () {
+            setAllCollapsed(true);
+        });
+    }
+    if (expandAll) {
+        expandAll.addEventListener('click', function () {
+            setAllCollapsed(false);
+        });
+    }
 })();
 </script>
 <?php renderLanguageSwitcherScript(); ?>
