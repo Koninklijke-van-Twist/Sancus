@@ -103,13 +103,26 @@ function project_companies_for_page(int $ttl = 3600): array
     return project_default_companies();
 }
 
+function project_normalize_job_status(string $status): string
+{
+    $status = trim($status);
+    static $numeric = [
+        '0' => 'Planning',
+        '1' => 'Offerte',
+        '2' => 'Open',
+        '3' => 'Voltooid',
+    ];
+
+    return $numeric[$status] ?? $status;
+}
+
 function project_normalize_project_row(array $row): array
 {
     return [
         'no' => trim((string) ($row['No'] ?? '')),
         'description' => trim((string) ($row['Description'] ?? '')),
         'contract_no' => trim((string) ($row['KVT_Contract_No'] ?? '')),
-        'status' => trim((string) ($row['Status'] ?? '')),
+        'status' => project_normalize_job_status((string) ($row['Status'] ?? '')),
         'customer_no' => trim((string) ($row['Bill_to_Customer_No'] ?? '')),
         'customer_name' => trim((string) ($row['LVS_Bill_to_Name'] ?? '')),
     ];
@@ -240,7 +253,6 @@ function project_fetch_by_contract_no(string $company, string $contractNo, int $
         '$select' => SANCUS_PROJECT_SELECT,
         '$filter' => "KVT_Contract_No eq '" . $escaped . "'",
         '$orderby' => 'No desc',
-        '$top' => '50',
     ], $ttl);
 
     $projects = [];
@@ -815,6 +827,44 @@ function project_collect_job_nos(array $projects, array $workorders): array
 }
 
 /**
+ * Vul projecten aan die wel via werkorder-Job_No voorkomen, maar niet via KVT_Contract_No.
+ *
+ * @param list<string> $jobNos
+ * @param list<array<string,mixed>> $projects
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_missing_by_nos(string $company, array $jobNos, array $projects, int $ttl = 3600): array
+{
+    $have = [];
+    foreach ($projects as $project) {
+        if (!is_array($project)) {
+            continue;
+        }
+        $no = trim((string) ($project['no'] ?? ''));
+        if ($no !== '') {
+            $have[$no] = true;
+        }
+    }
+
+    foreach ($jobNos as $jobNo) {
+        $jobNo = trim((string) $jobNo);
+        if ($jobNo === '' || isset($have[$jobNo])) {
+            continue;
+        }
+
+        $fetched = project_fetch_by_no($company, $jobNo, $ttl);
+        if ($fetched === null) {
+            continue;
+        }
+
+        $projects[] = $fetched;
+        $have[$jobNo] = true;
+    }
+
+    return $projects;
+}
+
+/**
  * Haal servicelocatienamen op via LVS_MainEntityCard.
  *
  * @param list<string> $codes
@@ -963,6 +1013,7 @@ function project_fetch_contract_overview(
     $projects = project_fetch_by_contract_no($company, $contractNo, $ttl);
     $workorders = project_fetch_workorders_for_contract($company, $contractNo, $ttl);
     $jobNos = project_collect_job_nos($projects, $workorders);
+    $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
 
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
