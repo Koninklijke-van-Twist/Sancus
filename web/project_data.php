@@ -12,6 +12,8 @@ require_once __DIR__ . '/odata.php';
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
+const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Job_Task_No,Line_No,Type,No,Description,Planning_Date,Qty_to_Transfer_to_Journal,Unit_Cost_LCY,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No';
+const SANCUS_ITEM_SELECT = 'No,Costing_Method';
 const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Code,Task_Description,Start_Date,Contract_No,Status';
 const SANCUS_CONTRACT_SELECT = 'Contract_No,KVT_Total_Sales_Price';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
@@ -20,6 +22,7 @@ const SANCUS_NIGHTLY_CACHE_TTL = 90000;
 const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
 const SANCUS_NIGHTLY_SEARCH_MAX_AGE = 2592000;
 const SANCUS_SEARCH_HISTORY_MAX_AGE = SANCUS_NIGHTLY_SEARCH_MAX_AGE;
+const SANCUS_LOAD_JOB_CHUNK = 2;
 
 /**
  * Functies
@@ -238,6 +241,8 @@ function project_normalize_posten_row(array $row): array
         'posting_date' => trim((string) ($row['Posting_Date'] ?? '')),
         'quantity' => $quantity,
         'cost' => $cost,
+        'unbooked_cost' => 0.0,
+        'is_unbooked_cost_line' => false,
         'revenue' => $revenue,
     ];
 }
@@ -378,6 +383,8 @@ function project_normalize_planning_row(array $row): array
         'posting_date' => $plannedDate,
         'quantity' => 1.0,
         'cost' => 0.0,
+        'unbooked_cost' => 0.0,
+        'is_unbooked_cost_line' => false,
     ];
 
     $lines = [];
@@ -438,6 +445,264 @@ function project_fetch_planning_for_contract(string $company, string $contractNo
     }
 
     return $lines;
+}
+
+/**
+ * Of een BC Costing_Method als Standard telt (webservice kan EN/NL teruggeven).
+ */
+function project_is_standard_costing_method(string $method): bool
+{
+    $method = trim($method);
+    return strcasecmp($method, 'Standard') === 0
+        || strcasecmp($method, 'Standaard') === 0;
+}
+
+/**
+ * Haal Costing_Method op voor artikelnummers via AppItemCard (gebatched).
+ *
+ * @param list<string> $itemNos
+ * @return array<string,string> itemNo => Costing_Method
+ */
+function project_fetch_item_costing_methods(string $company, array $itemNos, int $ttl = 3600): array
+{
+    $methods = [];
+    $unique = [];
+    foreach ($itemNos as $itemNo) {
+        $itemNo = trim((string) $itemNo);
+        if ($itemNo === '' || isset($unique[$itemNo])) {
+            continue;
+        }
+        $unique[$itemNo] = true;
+    }
+
+    $list = array_keys($unique);
+    $chunkSize = 20;
+    for ($offset = 0, $total = count($list); $offset < $total; $offset += $chunkSize) {
+        $chunk = array_slice($list, $offset, $chunkSize);
+        $parts = [];
+        foreach ($chunk as $itemNo) {
+            $escaped = project_escape_odata_string((string) $itemNo);
+            if ($escaped !== '') {
+                $parts[] = "No eq '" . $escaped . "'";
+            }
+        }
+        if ($parts === []) {
+            continue;
+        }
+
+        $rows = project_try_fetch_rows($company, 'AppItemCard', [
+            '$select' => SANCUS_ITEM_SELECT,
+            '$filter' => implode(' or ', $parts),
+        ], $ttl);
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $no = trim((string) ($row['No'] ?? ''));
+            if ($no === '') {
+                continue;
+            }
+            $methods[$no] = trim((string) ($row['Costing_Method'] ?? ''));
+        }
+    }
+
+    return $methods;
+}
+
+/**
+ * Haal Job_Planning_Lines (projectplanningsregels) met qty te boeken op voor projecten.
+ *
+ * @param list<string> $jobNos
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_job_planning_for_jobs(
+    string $company,
+    array $jobNos,
+    string $dateFrom = '',
+    string $dateTo = '',
+    int $ttl = 3600
+): array {
+    $lines = [];
+    $seen = [];
+
+    foreach ($jobNos as $jobNo) {
+        $jobNo = trim((string) $jobNo);
+        if ($jobNo === '' || isset($seen[$jobNo])) {
+            continue;
+        }
+        $seen[$jobNo] = true;
+
+        $escaped = project_escape_odata_string($jobNo);
+        if ($escaped === '') {
+            continue;
+        }
+
+        $filter = project_append_date_range_filter(
+            "Job_No eq '" . $escaped . "' and Qty_to_Transfer_to_Journal ne 0",
+            'Planning_Date',
+            $dateFrom,
+            $dateTo
+        );
+
+        $rows = project_try_fetch_rows($company, 'Job_Planning_Lines', [
+            '$select' => SANCUS_JOB_PLANNING_SELECT,
+            '$filter' => $filter,
+            '$orderby' => 'Line_No asc',
+        ], $ttl);
+
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $lines[] = $row;
+            }
+        }
+    }
+
+    return $lines;
+}
+
+/**
+ * Zet Standard-item planningsregels om naar ongeboekte kostregels (Qty × Unit_Cost_LCY).
+ *
+ * @param list<array<string,mixed>> $planningRows
+ * @return list<array<string,mixed>>
+ */
+function project_normalize_unbooked_cost_lines(string $company, array $planningRows, int $ttl = 3600): array
+{
+    $candidates = [];
+    $itemNos = [];
+
+    foreach ($planningRows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $type = trim((string) ($row['Type'] ?? ''));
+        if (strcasecmp($type, 'Artikel') !== 0 && strcasecmp($type, 'Item') !== 0) {
+            continue;
+        }
+
+        $qty = (float) ($row['Qty_to_Transfer_to_Journal'] ?? 0);
+        if (abs($qty) < 0.00001) {
+            continue;
+        }
+
+        $articleNo = trim((string) ($row['No'] ?? ''));
+        if ($articleNo === '') {
+            continue;
+        }
+
+        $candidates[] = $row;
+        $itemNos[] = $articleNo;
+    }
+
+    if ($candidates === []) {
+        return [];
+    }
+
+    $methods = project_fetch_item_costing_methods($company, $itemNos, $ttl);
+    $lines = [];
+
+    foreach ($candidates as $row) {
+        $articleNo = trim((string) ($row['No'] ?? ''));
+        $method = (string) ($methods[$articleNo] ?? '');
+        if (!project_is_standard_costing_method($method)) {
+            continue;
+        }
+
+        $qty = (float) ($row['Qty_to_Transfer_to_Journal'] ?? 0);
+        $unitCost = (float) ($row['Unit_Cost_LCY'] ?? 0);
+        $unbookedCost = $qty * $unitCost;
+        if (abs($unbookedCost) < 0.00001) {
+            continue;
+        }
+
+        $lines[] = [
+            'entry_no' => (int) ($row['Line_No'] ?? 0),
+            'job_no' => trim((string) ($row['Job_No'] ?? '')),
+            'entry_type' => '',
+            'details' => trim((string) ($row['LVS_Main_Entity'] ?? '')),
+            'details_name' => trim((string) ($row['LVS_Main_Entity_Description'] ?? '')),
+            'component_no' => trim((string) ($row['LVS_Component_No'] ?? '')),
+            'component_name' => trim((string) ($row['LVS_Component_Description'] ?? '')),
+            'work_order_no' => trim((string) ($row['LVS_Work_Order_No'] ?? '')),
+            'bc_type' => trim((string) ($row['Type'] ?? '')),
+            'work_type_code' => '',
+            'article_no' => $articleNo,
+            'type_label' => 'Materiaal',
+            'type_detail' => $articleNo,
+            'description' => trim((string) ($row['Description'] ?? '')),
+            'posting_date' => trim((string) ($row['Planning_Date'] ?? '')),
+            'quantity' => $qty,
+            'cost' => 0.0,
+            'unbooked_cost' => $unbookedCost,
+            'is_unbooked_cost_line' => true,
+            'revenue' => 0.0,
+        ];
+    }
+
+    return $lines;
+}
+
+/**
+ * Filter/activeer ongeboekte kostregels op basis van gebruikersvoorkeur.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @return list<array<string,mixed>>
+ */
+function project_apply_unbooked_cost_preference(array $lines, bool $includeUnbookedCosts): array
+{
+    $result = [];
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+
+        $isUnbookedLine = !empty($line['is_unbooked_cost_line']);
+        if ($isUnbookedLine && !$includeUnbookedCosts) {
+            continue;
+        }
+
+        if ($includeUnbookedCosts) {
+            $line['cost'] = (float) ($line['cost'] ?? 0) + (float) ($line['unbooked_cost'] ?? 0);
+        }
+
+        $result[] = $line;
+    }
+
+    return $result;
+}
+
+/**
+ * Haal werkorders op voor een projectnummer.
+ *
+ * @return list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,task_code:string,description:string,start_date:string,status:string}>
+ */
+function project_fetch_workorders_for_job(string $company, string $jobNo, int $ttl = 3600): array
+{
+    $escaped = project_escape_odata_string($jobNo);
+    if ($escaped === '') {
+        return [];
+    }
+
+    $rows = project_try_fetch_rows($company, 'AppWerkorders', [
+        '$select' => SANCUS_WERKORDER_SELECT,
+        '$filter' => "Job_No eq '" . $escaped . "'",
+        '$orderby' => 'No asc',
+    ], $ttl);
+
+    $workorders = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $normalized = project_normalize_workorder_row($row);
+        if ($normalized['no'] !== '') {
+            $workorders[] = $normalized;
+        }
+    }
+
+    return $workorders;
 }
 
 /**
@@ -566,6 +831,8 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
                 'posting_date' => (string) ($workorder['start_date'] ?? ''),
                 'quantity' => 0.0,
                 'cost' => 0.0,
+                'unbooked_cost' => 0.0,
+                'is_unbooked_cost_line' => false,
                 'revenue' => 0.0,
                 'unbooked' => false,
                 'placeholder_key' => '',
@@ -594,6 +861,8 @@ function project_supplement_unbooked_workorders(array $lines, array $workorders)
                 'posting_date' => (string) ($workorder['start_date'] ?? ''),
                 'quantity' => null,
                 'cost' => 0.0,
+                'unbooked_cost' => 0.0,
+                'is_unbooked_cost_line' => false,
                 'revenue' => 0.0,
                 'unbooked' => true,
                 'placeholder_key' => $placeholderKey,
@@ -1017,7 +1286,12 @@ function project_fetch_contract_overview(
 
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
-    $lines = project_supplement_unbooked_workorders(array_merge($posten, $planning), $workorders);
+    $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $unbookedCostLines = project_normalize_unbooked_cost_lines($company, $jobPlanning, $ttl);
+    $lines = project_supplement_unbooked_workorders(
+        array_merge($posten, $planning, $unbookedCostLines),
+        $workorders
+    );
     $lines = project_enrich_workorder_start_dates($lines, $workorders);
     $lines = project_enrich_project_status($lines, $projects);
     $lines = project_enrich_details_names($company, $lines, $ttl);
@@ -1047,6 +1321,75 @@ function project_fetch_contract_overview(
         'customer_name' => $customerName,
         'customer_no' => $customerNo,
         'contract_value' => $contractValue,
+        'contract_no' => $contractNo,
+    ];
+}
+
+/**
+ * Overzicht voor één project zonder (geldig) contract.
+ *
+ * @return array{
+ *   projects:list<array<string,mixed>>,
+ *   lines:list<array<string,mixed>>,
+ *   workorders:list<array<string,mixed>>,
+ *   customer_name:string,
+ *   customer_no:string,
+ *   contract_value:?float,
+ *   contract_no:string
+ * }
+ */
+function project_fetch_project_overview(
+    string $company,
+    string $projectNo,
+    string $dateFrom = '',
+    string $dateTo = '',
+    int $ttl = 3600
+): array {
+    $project = project_fetch_by_no($company, $projectNo, $ttl);
+    $projects = $project !== null ? [$project] : [];
+    $workorders = project_fetch_workorders_for_job($company, $projectNo, $ttl);
+    $jobNos = project_collect_job_nos($projects, $workorders);
+    if ($jobNos === [] && $projectNo !== '') {
+        $jobNos = [$projectNo];
+    }
+    $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
+
+    $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $unbookedCostLines = project_normalize_unbooked_cost_lines($company, $jobPlanning, $ttl);
+    $lines = project_supplement_unbooked_workorders(
+        array_merge($posten, $unbookedCostLines),
+        $workorders
+    );
+    $lines = project_enrich_workorder_start_dates($lines, $workorders);
+    $lines = project_enrich_project_status($lines, $projects);
+    $lines = project_enrich_details_names($company, $lines, $ttl);
+
+    $customerName = '';
+    $customerNo = '';
+    foreach ($projects as $projectRow) {
+        if (!is_array($projectRow)) {
+            continue;
+        }
+        if ($customerName === '' && trim((string) ($projectRow['customer_name'] ?? '')) !== '') {
+            $customerName = trim((string) $projectRow['customer_name']);
+        }
+        if ($customerNo === '' && trim((string) ($projectRow['customer_no'] ?? '')) !== '') {
+            $customerNo = trim((string) $projectRow['customer_no']);
+        }
+        if ($customerName !== '' && $customerNo !== '') {
+            break;
+        }
+    }
+
+    return [
+        'projects' => $projects,
+        'lines' => $lines,
+        'workorders' => $workorders,
+        'customer_name' => $customerName,
+        'customer_no' => $customerNo,
+        'contract_value' => null,
+        'contract_no' => '',
     ];
 }
 
@@ -1145,7 +1488,11 @@ function project_merge_identical_type_lines(string $typeLabel, array $lines): ar
             : 0.0;
         $merged[$key]['quantity'] = $qty + $addQty;
         $merged[$key]['cost'] = (float) ($merged[$key]['cost'] ?? 0) + (float) ($line['cost'] ?? 0);
+        $merged[$key]['unbooked_cost'] = (float) ($merged[$key]['unbooked_cost'] ?? 0) + (float) ($line['unbooked_cost'] ?? 0);
         $merged[$key]['revenue'] = (float) ($merged[$key]['revenue'] ?? 0) + (float) ($line['revenue'] ?? 0);
+        if (!empty($line['is_unbooked_cost_line'])) {
+            $merged[$key]['is_unbooked_cost_line'] = true;
+        }
     }
 
     return array_values($merged);

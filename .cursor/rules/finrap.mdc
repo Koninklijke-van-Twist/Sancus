@@ -24,8 +24,13 @@ alwaysApply: true
   - `AppProjecten` — alle projecten zoeken via `KVT_Contract_No`
   - `ProjectPosten` — via `Job_No` van AppProjecten én extra `Job_No`s uit AppWerkorders; optioneel filter op `Posting_Date`
   - `ContractPlanningsregels` — via `Contract_No`; `Main_Entity` = servicelocatie; types Factuur/Credietnota uit geboekte nummers; optioneel filter op `Planned_Invoice_Date`
-  - `AppWerkorders` — via `Contract_No`; levert extra projectnummers én placeholderregels (“Nog niet geboekt” / “Geannuleerd”)
+  - `Job_Planning_Lines` — ongeboekte kosten: `Qty_to_Transfer_to_Journal * Unit_Cost_LCY` alleen als `AppItemCard.Costing_Method` = Standard/Standaard; standaard niet meetellen, wel cachen
+  - `AppItemCard` — `Costing_Method` voor ongeboekte kostenfilter
+  - `AppWerkorders` — via `Contract_No` (of `Job_No` bij projectzoek); levert extra projectnummers én placeholderregels (“Nog niet geboekt” / “Geannuleerd”)
   - `LVS_MainEntityCard` — fallback servicelocatienaam via `Description` als die op post/planning/WO ontbreekt
+- Zoeken: contractnummer eerst; bij geen treffer projectnummer (`AppProjecten.No`); met contract → redirect naar contract + scroll/focus; zonder contract → single-project overview
+- Progressive load: zoeken toont voortgangsbalk; OData in stappen via `action=load_step` (`web/project_load.php`); AppItemCard Costing_Method gebatched
+- User prefs (`web/data/user_prefs/`): o.a. `include_unbooked_costs` via settings-modal (opslaan bij sluiten)
 - Cache:
   - `web/hourly.php` (GET) — contracten van de afgelopen 3 dagen, TTL tot volgende hourly
   - `web/nightly.php` (GET) — contracten van de afgelopen 30 dagen, TTL tot volgende nightly

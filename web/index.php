@@ -12,6 +12,7 @@ require_once __DIR__ . '/localization.php';
 require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/auth_helper.php';
 require_once __DIR__ . '/project_data.php';
+require_once __DIR__ . '/project_load.php';
 
 /**
  * Functies
@@ -217,12 +218,69 @@ function portal_group_cell(
  * Page load
  */
 
+// Progressive load API (chunked OData)
+if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+
+    $stepCompany = trim((string) ($_REQUEST['company'] ?? ''));
+    if ($stepCompany !== '') {
+        try {
+            auth_set_current_company_context($stepCompany);
+        } catch (Throwable $ignored) {
+        }
+    }
+
+    $step = trim((string) ($_REQUEST['step'] ?? 'init'));
+    $loadId = trim((string) ($_REQUEST['load_id'] ?? ''));
+    try {
+        $payload = project_load_run_step($loadId, $step, [
+            'company' => $stepCompany,
+            'query' => trim((string) ($_REQUEST['query'] ?? '')),
+            'date_from' => portal_parse_date_param((string) ($_REQUEST['date_from'] ?? '')),
+            'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
+            'ttl' => 3600,
+        ]);
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $loadStepError) {
+        http_response_code(500);
+        echo json_encode([
+            'ok' => false,
+            'done' => true,
+            'error' => 'load_failed',
+            'message' => $loadStepError->getMessage(),
+            'progress' => 100,
+            'label' => 'error',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
+
+// Per-user voorkeuren via AJAX (modal)
+if (
+    ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
+    && trim((string) ($_POST['action'] ?? '')) === 'save_prefs'
+) {
+    header('Content-Type: application/json; charset=utf-8');
+    $prefEmailAjax = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    if ($prefEmailAjax === '') {
+        http_response_code(401);
+        echo json_encode(['ok' => false]);
+        exit;
+    }
+
+    $includeUnbooked = isset($_POST['include_unbooked_costs'])
+        && in_array(strtolower(trim((string) $_POST['include_unbooked_costs'])), ['1', 'true', 'yes', 'on'], true);
+    saveUserPref($prefEmailAjax, 'include_unbooked_costs', $includeUnbooked);
+    echo json_encode(['ok' => true, 'include_unbooked_costs' => $includeUnbooked]);
+    exit;
+}
+
 $companies = project_companies_for_page();
 $prefEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
-$savedCompany = '';
-if ($prefEmail !== '') {
-    $savedCompany = trim((string) (loadUserPrefs($prefEmail)['company'] ?? ''));
-}
+$userPrefs = $prefEmail !== '' ? loadUserPrefs($prefEmail) : [];
+$includeUnbookedCosts = !empty($userPrefs['include_unbooked_costs']);
+$savedCompany = trim((string) ($userPrefs['company'] ?? ''));
 
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
 if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
@@ -236,7 +294,10 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = (string) ($companies[0] ?? '');
 }
 
-$contractNo = trim((string) ($_GET['contract'] ?? ''));
+$searchQuery = trim((string) ($_GET['contract'] ?? ''));
+$focusProject = trim((string) ($_GET['focus'] ?? ''));
+$resultId = trim((string) ($_GET['result'] ?? ''));
+$contractNo = '';
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
 $dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
 if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
@@ -264,48 +325,71 @@ $totalKilometers = 0.0;
 $totalMaterialMoney = 0.0;
 $totalHoursMoney = 0.0;
 $totalKilometersMoney = 0.0;
+$asyncLoad = false;
 
 auth_set_current_company_context($company);
 
 try {
-    if ($contractNo !== '') {
-        project_record_contract_search($company, $contractNo);
-        $overview = project_fetch_contract_overview($company, $contractNo, $dateFrom, $dateTo);
-        $projects = $overview['projects'];
-        $lines = $overview['lines'];
-        $customerName = (string) ($overview['customer_name'] ?? '');
-        $customerNo = (string) ($overview['customer_no'] ?? '');
-        $contractValue = array_key_exists('contract_value', $overview) ? $overview['contract_value'] : null;
-        $projectCount = count($projects);
-
-        if ($lines === [] && $projects === []) {
-            $errorKey = 'sancus.error.project_not_found';
+    if ($resultId !== '') {
+        $stored = project_load_state_read($resultId);
+        $overview = is_array($stored['overview'] ?? null) ? $stored['overview'] : null;
+        if ($overview === null) {
+            $errorKey = 'sancus.error.load_failed';
             $view = 'search';
         } else {
-            $totals = project_sum_amounts($lines);
-            $byType = project_sum_by_type($lines);
-            $totalCost = (float) ($totals['cost'] ?? 0);
-            $totalRevenue = (float) ($totals['revenue'] ?? 0);
-            $totalProfit = $totalRevenue - $totalCost;
-            $totalMaterial = (float) ($byType['Materiaal']['quantity'] ?? 0);
-            $totalHours = (float) ($byType['Uren']['quantity'] ?? 0);
-            $totalKilometers = (float) ($byType['Kilometers']['quantity'] ?? 0);
-            $totalMaterialMoney = (float) ($byType['Materiaal']['revenue'] ?? 0) - (float) ($byType['Materiaal']['cost'] ?? 0);
-            $totalHoursMoney = (float) ($byType['Uren']['revenue'] ?? 0) - (float) ($byType['Uren']['cost'] ?? 0);
-            $totalKilometersMoney = (float) ($byType['Kilometers']['revenue'] ?? 0) - (float) ($byType['Kilometers']['cost'] ?? 0);
-            $tableRows = project_flatten_grouped_rows($lines);
-            $postenCount = count($lines);
-            $view = 'posten';
+            $projects = is_array($overview['projects'] ?? null) ? $overview['projects'] : [];
+            $lines = is_array($overview['lines'] ?? null) ? $overview['lines'] : [];
+            $customerName = (string) ($overview['customer_name'] ?? '');
+            $customerNo = (string) ($overview['customer_no'] ?? '');
+            $contractValue = array_key_exists('contract_value', $overview) ? $overview['contract_value'] : null;
+            $contractNo = (string) ($overview['contract_no'] ?? '');
+            if ($focusProject === '') {
+                $focusProject = (string) ($overview['focus_project'] ?? '');
+            }
+            if ($searchQuery === '') {
+                $searchQuery = (string) ($overview['query'] ?? $contractNo);
+            }
+            $projectCount = count($projects);
+
+            if ($lines === [] && $projects === []) {
+                $errorKey = 'sancus.error.project_not_found';
+                $view = 'search';
+            } else {
+                $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
+                $totals = project_sum_amounts($lines);
+                $byType = project_sum_by_type($lines);
+                $totalCost = (float) ($totals['cost'] ?? 0);
+                $totalRevenue = (float) ($totals['revenue'] ?? 0);
+                $totalProfit = $totalRevenue - $totalCost;
+                $totalMaterial = (float) ($byType['Materiaal']['quantity'] ?? 0);
+                $totalHours = (float) ($byType['Uren']['quantity'] ?? 0);
+                $totalKilometers = (float) ($byType['Kilometers']['quantity'] ?? 0);
+                $totalMaterialMoney = (float) ($byType['Materiaal']['revenue'] ?? 0) - (float) ($byType['Materiaal']['cost'] ?? 0);
+                $totalHoursMoney = (float) ($byType['Uren']['revenue'] ?? 0) - (float) ($byType['Uren']['cost'] ?? 0);
+                $totalKilometersMoney = (float) ($byType['Kilometers']['revenue'] ?? 0) - (float) ($byType['Kilometers']['cost'] ?? 0);
+                $tableRows = project_flatten_grouped_rows($lines);
+                $postenCount = count($lines);
+                $view = 'posten';
+            }
+            project_load_state_delete($resultId);
         }
+    } elseif ($searchQuery !== '') {
+        // Geen synchrone BC-load meer: voortgang via chunked API
+        $asyncLoad = true;
+        $contractNo = $searchQuery;
+        $view = 'loading';
     }
 } catch (Throwable $loadError) {
     $errorKey = 'sancus.error.load_failed';
     $view = 'search';
+    $asyncLoad = false;
 }
 
 if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
     $totalProfitPct = ($totalProfit / $totalRevenue) * 100.0;
 }
+
+$searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
 
 ?><!DOCTYPE html>
 <html lang="<?= portal_h(getHtmlLang()) ?>">
@@ -569,6 +653,83 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         @keyframes sancus-loader-spin {
             to { transform: rotate(360deg); }
         }
+        .sancus-settings-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            border: 1px solid var(--kvt-line);
+            background: #fff;
+            color: var(--kvt-main-blue);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+        .sancus-settings-btn svg { width: 20px; height: 20px; display: block; }
+        .sancus-settings-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 13000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(15, 23, 42, 0.35);
+        }
+        .sancus-settings-modal.is-open { display: flex; }
+        .sancus-settings-panel {
+            width: min(420px, 100%);
+            background: #fff;
+            border: 1px solid var(--kvt-line);
+            border-radius: 12px;
+            padding: 18px 18px 16px;
+            box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+        }
+        .sancus-settings-panel h2 {
+            margin: 0 0 14px;
+            font-size: 1.15rem;
+            color: var(--kvt-text);
+        }
+        .sancus-settings-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            margin: 0 0 16px;
+            color: var(--kvt-text);
+            font-weight: 600;
+            line-height: 1.35;
+        }
+        .sancus-settings-row input { margin-top: 3px; }
+        .sancus-settings-actions { display: flex; justify-content: flex-end; }
+        tr.is-focus-project {
+            outline: 2px solid var(--kvt-main-blue);
+            outline-offset: -2px;
+        }
+        .sancus-progress-card { margin-top: 0; }
+        .sancus-progress-label {
+            margin: 0 0 10px;
+            color: var(--kvt-muted);
+            font-weight: 600;
+        }
+        .sancus-progress-track {
+            height: 12px;
+            border-radius: 999px;
+            background: #e5e7eb;
+            overflow: hidden;
+        }
+        .sancus-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--kvt-main-blue);
+            transition: width 0.25s ease;
+        }
+        .sancus-progress-pct {
+            margin: 8px 0 0;
+            font-variant-numeric: tabular-nums;
+            color: var(--kvt-text);
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -577,8 +738,27 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         <img src="logo-website.png" alt="KVT">
         <div class="sancus-header-actions">
             <?php renderLanguageSwitcher(); ?>
+            <button type="button" class="sancus-settings-btn" id="sancus-settings-open" aria-label="<?= portal_h(LOC('sancus.btn.settings')) ?>" title="<?= portal_h(LOC('sancus.btn.settings')) ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+                    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.1.7.6 1.2 1.5 1.3H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>
+                </svg>
+            </button>
         </div>
     </header>
+
+    <div class="sancus-settings-modal" id="sancus-settings-modal" aria-hidden="true">
+        <div class="sancus-settings-panel" role="dialog" aria-modal="true" aria-labelledby="sancus-settings-title">
+            <h2 id="sancus-settings-title"><?= portal_h(LOC('sancus.settings.title')) ?></h2>
+            <label class="sancus-settings-row">
+                <input type="checkbox" id="sancus-pref-unbooked-costs"<?= $includeUnbookedCosts ? ' checked' : '' ?>>
+                <span><?= portal_h(LOC('sancus.settings.include_unbooked_costs')) ?></span>
+            </label>
+            <div class="sancus-settings-actions">
+                <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-settings-close"><?= portal_h(LOC('sancus.settings.close')) ?></button>
+            </div>
+        </div>
+    </div>
 
     <section class="sancus-card">
         <h1 class="brand-display"><?= portal_h(LOC('sancus.hero.title')) ?></h1>
@@ -597,7 +777,7 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                 </label>
                 <label>
                     <?= portal_h(LOC('sancus.label.contract')) ?>
-                    <input type="search" name="contract" value="<?= portal_h($contractNo) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
+                    <input type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
                 </label>
                 <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
             </div>
@@ -618,13 +798,30 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
         <div class="sancus-alert"><?= portal_h(LOC($errorKey)) ?></div>
     <?php endif; ?>
 
+    <?php if ($view === 'loading'): ?>
+        <section class="sancus-card sancus-progress-card" id="sancus-async-load"
+            data-company="<?= portal_h($company) ?>"
+            data-query="<?= portal_h($searchQuery) ?>"
+            data-date-from="<?= portal_h($dateFrom) ?>"
+            data-date-to="<?= portal_h($dateTo) ?>"
+            data-focus="<?= portal_h($focusProject) ?>"
+            data-lang="<?= portal_h(getCurrentLanguage()) ?>">
+            <h2><?= portal_h(LOC('sancus.loader.loading')) ?></h2>
+            <p class="sancus-progress-label" id="sancus-progress-label"><?= portal_h(LOC('sancus.progress.resolve')) ?></p>
+            <div class="sancus-progress-track" aria-hidden="true">
+                <div class="sancus-progress-bar" id="sancus-progress-bar"></div>
+            </div>
+            <p class="sancus-progress-pct" id="sancus-progress-pct">0%</p>
+        </section>
+    <?php endif; ?>
+
     <?php if ($view === 'posten'): ?>
         <section class="sancus-card">
             <h2><?= portal_h(LOC('sancus.section.posten')) ?></h2>
             <div class="sancus-meta">
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
-                    <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo)) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo !== '' ? $contractNo : $searchQuery)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h((string) $projectCount) ?> <?= portal_h(LOC('sancus.meta.projects_count')) ?></span>
                 </div>
                 <div class="sancus-kpi">
@@ -746,8 +943,16 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
                                     && $workOrderStartDate !== ''
                                     && $postingDate === '';
                                 $detailsToggleClass = $isDetailsHeader ? ' is-details-toggle' : '';
+                                $rowProjectNo = !empty($row['show_project']) ? trim((string) ($row['project_no'] ?? '')) : '';
                                 ?>
-                                <tr class="<?= portal_h($rowClass) ?>"<?php if ($currentDetailsGroup > 0): ?> data-details-group="<?= (int) $currentDetailsGroup ?>"<?php endif; ?>>
+                                <tr class="<?= portal_h($rowClass) ?>"<?php
+                                    if ($currentDetailsGroup > 0) {
+                                        echo ' data-details-group="' . (int) $currentDetailsGroup . '"';
+                                    }
+                                    if ($rowProjectNo !== '') {
+                                        echo ' data-project-no="' . portal_h($rowProjectNo) . '"';
+                                    }
+                                ?>>
                                     <?php if ($isLine): ?>
                                         <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
                                     <?php elseif ($showDualWorkOrderDates): ?>
@@ -1066,6 +1271,212 @@ if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
             setAllCollapsed(false);
         });
     }
+})();
+
+(function () {
+    var focusProject = <?= json_encode($focusProject, JSON_UNESCAPED_UNICODE) ?>;
+    if (!focusProject) {
+        return;
+    }
+    var rows = document.querySelectorAll('tr[data-project-no]');
+    var target = null;
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-project-no') === focusProject) {
+            target = rows[i];
+            break;
+        }
+    }
+    if (!target) {
+        return;
+    }
+    target.classList.add('is-focus-project');
+    window.setTimeout(function () {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+})();
+
+(function () {
+    var openBtn = document.getElementById('sancus-settings-open');
+    var modal = document.getElementById('sancus-settings-modal');
+    var closeBtn = document.getElementById('sancus-settings-close');
+    var checkbox = document.getElementById('sancus-pref-unbooked-costs');
+    if (!openBtn || !modal || !closeBtn || !checkbox) {
+        return;
+    }
+
+    var initialChecked = !!checkbox.checked;
+    var dirty = false;
+
+    function openModal() {
+        initialChecked = !!checkbox.checked;
+        dirty = false;
+        modal.classList.add('is-open');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeModal() {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+        if (!dirty) {
+            return;
+        }
+
+        var body = new URLSearchParams();
+        body.set('action', 'save_prefs');
+        body.set('include_unbooked_costs', checkbox.checked ? '1' : '0');
+
+        fetch('index.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body: body.toString(),
+            credentials: 'same-origin'
+        }).then(function () {
+            window.location.reload();
+        }).catch(function () {
+            window.location.reload();
+        });
+    }
+
+    checkbox.addEventListener('change', function () {
+        dirty = checkbox.checked !== initialChecked;
+    });
+    openBtn.addEventListener('click', openModal);
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', function (event) {
+        if (event.target === modal) {
+            closeModal();
+        }
+    });
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && modal.classList.contains('is-open')) {
+            closeModal();
+        }
+    });
+})();
+(function () {
+    var panel = document.getElementById('sancus-async-load');
+    if (!panel) {
+        return;
+    }
+
+    var bar = document.getElementById('sancus-progress-bar');
+    var pctEl = document.getElementById('sancus-progress-pct');
+    var labelEl = document.getElementById('sancus-progress-label');
+    var labels = {
+        resolve: <?= json_encode(LOC('sancus.progress.resolve'), JSON_UNESCAPED_UNICODE) ?>,
+        posten: <?= json_encode(LOC('sancus.progress.posten'), JSON_UNESCAPED_UNICODE) ?>,
+        posten_done: <?= json_encode(LOC('sancus.progress.posten_done'), JSON_UNESCAPED_UNICODE) ?>,
+        contract_planning: <?= json_encode(LOC('sancus.progress.contract_planning'), JSON_UNESCAPED_UNICODE) ?>,
+        job_planning: <?= json_encode(LOC('sancus.progress.job_planning'), JSON_UNESCAPED_UNICODE) ?>,
+        job_planning_done: <?= json_encode(LOC('sancus.progress.job_planning_done'), JSON_UNESCAPED_UNICODE) ?>,
+        done: <?= json_encode(LOC('sancus.progress.done'), JSON_UNESCAPED_UNICODE) ?>,
+        error: <?= json_encode(LOC('sancus.progress.error'), JSON_UNESCAPED_UNICODE) ?>,
+        not_found: <?= json_encode(LOC('sancus.error.project_not_found'), JSON_UNESCAPED_UNICODE) ?>,
+        expired: <?= json_encode(LOC('sancus.error.load_failed'), JSON_UNESCAPED_UNICODE) ?>,
+        load_failed: <?= json_encode(LOC('sancus.error.load_failed'), JSON_UNESCAPED_UNICODE) ?>,
+        redirect: <?= json_encode(LOC('sancus.progress.resolve'), JSON_UNESCAPED_UNICODE) ?>
+    };
+
+    function setProgress(pct, labelKey) {
+        var value = Math.max(0, Math.min(100, Number(pct) || 0));
+        if (bar) {
+            bar.style.width = value + '%';
+        }
+        if (pctEl) {
+            pctEl.textContent = Math.round(value) + '%';
+        }
+        if (labelEl) {
+            labelEl.textContent = labels[labelKey] || labels.resolve;
+        }
+    }
+
+    function buildResultUrl(resultId, meta) {
+        var params = new URLSearchParams();
+        params.set('company', panel.getAttribute('data-company') || '');
+        params.set('contract', (meta && meta.contract_no) || (meta && meta.query) || panel.getAttribute('data-query') || '');
+        params.set('result', resultId);
+        params.set('lang', panel.getAttribute('data-lang') || 'nl');
+        var focus = (meta && meta.focus_project) || panel.getAttribute('data-focus') || '';
+        if (focus) {
+            params.set('focus', focus);
+        }
+        var dateFrom = panel.getAttribute('data-date-from') || '';
+        var dateTo = panel.getAttribute('data-date-to') || '';
+        if (dateFrom) {
+            params.set('date_from', dateFrom);
+        }
+        if (dateTo) {
+            params.set('date_to', dateTo);
+        }
+        return 'index.php?' + params.toString();
+    }
+
+    function runStep(step, loadId) {
+        var body = new URLSearchParams();
+        body.set('action', 'load_step');
+        body.set('step', step);
+        body.set('company', panel.getAttribute('data-company') || '');
+        body.set('query', panel.getAttribute('data-query') || '');
+        body.set('date_from', panel.getAttribute('data-date-from') || '');
+        body.set('date_to', panel.getAttribute('data-date-to') || '');
+        if (loadId) {
+            body.set('load_id', loadId);
+        }
+
+        return fetch('index.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
+            body: body.toString(),
+            credentials: 'same-origin',
+            cache: 'no-store'
+        }).then(function (response) {
+            return response.json();
+        }).then(function (data) {
+            if (!data || data.ok === false) {
+                setProgress(100, data && data.error ? data.error : 'error');
+                throw new Error((data && data.error) || 'load_failed');
+            }
+
+            setProgress(data.progress || 0, data.label || 'resolve');
+
+            if (data.redirect && data.redirect.contract) {
+                var redirectParams = new URLSearchParams();
+                redirectParams.set('company', panel.getAttribute('data-company') || '');
+                redirectParams.set('contract', data.redirect.contract);
+                redirectParams.set('lang', panel.getAttribute('data-lang') || 'nl');
+                if (data.redirect.focus) {
+                    redirectParams.set('focus', data.redirect.focus);
+                }
+                var df = panel.getAttribute('data-date-from') || '';
+                var dt = panel.getAttribute('data-date-to') || '';
+                if (df) {
+                    redirectParams.set('date_from', df);
+                }
+                if (dt) {
+                    redirectParams.set('date_to', dt);
+                }
+                window.location.href = 'index.php?' + redirectParams.toString();
+                return;
+            }
+
+            if (data.done && data.result_id) {
+                window.location.href = buildResultUrl(data.result_id, data.meta || {});
+                return;
+            }
+
+            if (data.done) {
+                setProgress(100, data.label || 'error');
+                return;
+            }
+
+            return runStep(data.next || 'assemble', data.load_id || loadId);
+        });
+    }
+
+    setProgress(2, 'resolve');
+    runStep('init', '').catch(function () {
+        setProgress(100, 'error');
+    });
 })();
 </script>
 <?php renderLanguageSwitcherScript(); ?>
