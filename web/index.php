@@ -239,7 +239,7 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'query' => trim((string) ($_REQUEST['query'] ?? '')),
             'date_from' => portal_parse_date_param((string) ($_REQUEST['date_from'] ?? '')),
             'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
-            'ttl' => 3600,
+            'ttl' => SANCUS_NIGHTLY_CACHE_TTL,
         ]);
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $loadStepError) {

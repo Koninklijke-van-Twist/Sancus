@@ -956,12 +956,15 @@ function project_search_history_path(): string
 }
 
 /**
- * Registreer een contractzoekopdracht voor cache-warming (hourly/nightly).
+ * Registreer een zoekopdracht voor cache-warming (hourly/nightly).
+ *
+ * @param 'contract'|'project' $kind
  */
-function project_record_contract_search(string $company, string $contractNo): void
+function project_record_contract_search(string $company, string $contractNo, string $kind = 'contract'): void
 {
     $company = trim($company);
     $contractNo = trim($contractNo);
+    $kind = strtolower(trim($kind)) === 'project' ? 'project' : 'contract';
     if ($company === '' || $contractNo === '') {
         return;
     }
@@ -986,23 +989,26 @@ function project_record_contract_search(string $company, string $contractNo): vo
                 $rowCompany = trim((string) ($row['company'] ?? ''));
                 $rowContract = trim((string) ($row['contract'] ?? ''));
                 $rowAt = (int) ($row['at'] ?? 0);
+                $rowKind = strtolower(trim((string) ($row['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
                 if ($rowCompany === '' || $rowContract === '' || $rowAt < $cutoff) {
                     continue;
                 }
-                $key = strtolower($rowCompany) . "\n" . strtolower($rowContract);
+                $key = $rowKind . "\n" . strtolower($rowCompany) . "\n" . strtolower($rowContract);
                 $entries[$key] = [
                     'company' => $rowCompany,
                     'contract' => $rowContract,
+                    'kind' => $rowKind,
                     'at' => $rowAt,
                 ];
             }
         }
     }
 
-    $key = strtolower($company) . "\n" . strtolower($contractNo);
+    $key = $kind . "\n" . strtolower($company) . "\n" . strtolower($contractNo);
     $entries[$key] = [
         'company' => $company,
         'contract' => $contractNo,
+        'kind' => $kind,
         'at' => $now,
     ];
 
@@ -1018,9 +1024,9 @@ function project_record_contract_search(string $company, string $contractNo): vo
 }
 
 /**
- * Contractzoekopdrachten van de afgelopen maand.
+ * Contract-/projectzoekopdrachten van de afgelopen maand.
  *
- * @return list<array{company:string,contract:string,at:int}>
+ * @return list<array{company:string,contract:string,kind:string,at:int}>
  */
 function project_recent_contract_searches(int $maxAgeSeconds = SANCUS_SEARCH_HISTORY_MAX_AGE): array
 {
@@ -1043,12 +1049,14 @@ function project_recent_contract_searches(int $maxAgeSeconds = SANCUS_SEARCH_HIS
         $company = trim((string) ($row['company'] ?? ''));
         $contract = trim((string) ($row['contract'] ?? ''));
         $at = (int) ($row['at'] ?? 0);
+        $kind = strtolower(trim((string) ($row['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
         if ($company === '' || $contract === '' || $at < $cutoff) {
             continue;
         }
         $entries[] = [
             'company' => $company,
             'contract' => $contract,
+            'kind' => $kind,
             'at' => $at,
         ];
     }
@@ -1394,12 +1402,12 @@ function project_fetch_project_overview(
 }
 
 /**
- * Warm OData-cache voor recente contractzoekopdrachten.
+ * Warm OData-cache voor recente contract-/projectzoekopdrachten.
  *
  * @return array{
  *   searches:int,
- *   warmed:list<array{company:string,contract:string,projects:int,lines:int,workorders:int}>,
- *   failed:list<array{company:string,contract:string,error:string}>
+ *   warmed:list<array{company:string,contract:string,kind:string,projects:int,lines:int,workorders:int}>,
+ *   failed:list<array{company:string,contract:string,kind:string,error:string}>
  * }
  */
 function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
@@ -1410,17 +1418,31 @@ function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
 
     foreach ($searches as $search) {
         $company = trim((string) ($search['company'] ?? ''));
-        $contract = trim((string) ($search['contract'] ?? ''));
-        if ($company === '' || $contract === '') {
+        $query = trim((string) ($search['contract'] ?? ''));
+        $kind = strtolower(trim((string) ($search['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
+        if ($company === '' || $query === '') {
             continue;
         }
 
         try {
             auth_set_current_company_context($company);
-            $overview = project_fetch_contract_overview($company, $contract, '', '', $ttl);
+            if ($kind === 'project') {
+                $overview = project_fetch_project_overview($company, $query, '', '', $ttl);
+            } else {
+                $overview = project_fetch_contract_overview($company, $query, '', '', $ttl);
+                // Oude entries zonder kind: als contract leeg is, probeer als project
+                if (($overview['projects'] ?? []) === [] && ($overview['lines'] ?? []) === []) {
+                    $overview = project_fetch_project_overview($company, $query, '', '', $ttl);
+                    if (($overview['projects'] ?? []) !== [] || ($overview['lines'] ?? []) !== []) {
+                        $kind = 'project';
+                        project_record_contract_search($company, $query, 'project');
+                    }
+                }
+            }
             $warmed[] = [
                 'company' => $company,
-                'contract' => $contract,
+                'contract' => $query,
+                'kind' => $kind,
                 'projects' => count($overview['projects'] ?? []),
                 'lines' => count($overview['lines'] ?? []),
                 'workorders' => count($overview['workorders'] ?? []),
@@ -1428,7 +1450,8 @@ function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
         } catch (Throwable $error) {
             $failed[] = [
                 'company' => $company,
-                'contract' => $contract,
+                'contract' => $query,
+                'kind' => $kind,
                 'error' => $error->getMessage(),
             ];
         }

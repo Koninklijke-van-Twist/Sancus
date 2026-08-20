@@ -170,12 +170,11 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $query = trim((string) ($params['query'] ?? ''));
         $dateFrom = trim((string) ($params['date_from'] ?? ''));
         $dateTo = trim((string) ($params['date_to'] ?? ''));
-        $ttl = (int) ($params['ttl'] ?? 3600);
+        $ttl = (int) ($params['ttl'] ?? SANCUS_NIGHTLY_CACHE_TTL);
         if ($ttl < 60) {
-            $ttl = 3600;
+            $ttl = SANCUS_NIGHTLY_CACHE_TTL;
         }
 
-        project_record_contract_search($company, $query);
         $resolved = project_load_resolve_search($company, $query, $ttl);
         if ($resolved === null) {
             return [
@@ -188,16 +187,30 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         }
 
         if (($resolved['mode'] ?? '') === 'redirect') {
+            $linkedContract = (string) ($resolved['contract_no'] ?? '');
+            if ($linkedContract !== '') {
+                // Zet het echte contract meteen in de nightly/hourly zoeklijst
+                project_record_contract_search($company, $linkedContract, 'contract');
+            }
             return [
                 'ok' => true,
                 'done' => true,
                 'redirect' => [
-                    'contract' => (string) ($resolved['contract_no'] ?? ''),
+                    'contract' => $linkedContract,
                     'focus' => (string) ($resolved['focus_project'] ?? ''),
                 ],
                 'progress' => 100,
                 'label' => 'redirect',
             ];
+        }
+
+        // Gevonden contract of los project: meteen opnemen voor nightly/hourly warm-up
+        if (($resolved['mode'] ?? '') === 'project') {
+            $recordKey = (string) ($resolved['focus_project'] ?? $query);
+            project_record_contract_search($company, $recordKey, 'project');
+        } else {
+            $recordKey = (string) ($resolved['contract_no'] ?? $query);
+            project_record_contract_search($company, $recordKey, 'contract');
         }
 
         $loadId = bin2hex(random_bytes(16));
