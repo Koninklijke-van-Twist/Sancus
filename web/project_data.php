@@ -63,6 +63,50 @@ function project_company_entity_url(string $baseUrl, string $environment, string
     return $url;
 }
 
+function project_set_force_refresh(bool $enabled): void
+{
+    $GLOBALS['SANCUS_FORCE_REFRESH'] = $enabled;
+}
+
+function project_is_force_refresh(): bool
+{
+    return !empty($GLOBALS['SANCUS_FORCE_REFRESH']);
+}
+
+function project_reset_data_cached_at(): void
+{
+    $GLOBALS['SANCUS_DATA_CACHED_AT'] = null;
+}
+
+function project_note_data_cached_at(int $cachedAt): void
+{
+    if ($cachedAt <= 0) {
+        return;
+    }
+    $current = $GLOBALS['SANCUS_DATA_CACHED_AT'] ?? null;
+    if (!is_int($current) || $cachedAt < $current) {
+        $GLOBALS['SANCUS_DATA_CACHED_AT'] = $cachedAt;
+    }
+}
+
+function project_get_data_cached_at(): ?int
+{
+    $value = $GLOBALS['SANCUS_DATA_CACHED_AT'] ?? null;
+    return is_int($value) && $value > 0 ? $value : null;
+}
+
+/**
+ * Format leeftijd als hh:mm (uren:minuten sinds cached_at).
+ */
+function project_format_data_age(int $cachedAt, ?int $now = null): string
+{
+    $now = $now ?? time();
+    $ageSeconds = max(0, $now - max(0, $cachedAt));
+    $hours = intdiv($ageSeconds, 3600);
+    $minutes = intdiv($ageSeconds % 3600, 60);
+    return sprintf('%02d:%02d', $hours, $minutes);
+}
+
 function project_fetch_rows(string $company, string $entitySet, array $query, int $ttl = 3600): array
 {
     global $baseUrl;
@@ -70,8 +114,20 @@ function project_fetch_rows(string $company, string $entitySet, array $query, in
     $environment = auth_get_environment_for_company($company, $ttl);
     $auth = auth_get_auth_for_environment($environment);
     $url = project_company_entity_url($baseUrl, $environment, $company, $entitySet, $query);
+    $cachePath = cache_path_for_key(build_cache_key($url, $auth));
 
-    return odata_get_all($url, $auth, $ttl);
+    if (project_is_force_refresh() && is_file($cachePath)) {
+        @unlink($cachePath);
+    }
+
+    $rows = odata_get_all($url, $auth, $ttl);
+
+    $meta = odata_cache_read_payload_meta($cachePath);
+    if (is_array($meta)) {
+        project_note_data_cached_at((int) ($meta['cached_at'] ?? 0));
+    }
+
+    return $rows;
 }
 
 function project_try_fetch_rows(string $company, string $entitySet, array $query, int $ttl = 3600): array

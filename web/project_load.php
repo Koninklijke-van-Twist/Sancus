@@ -170,10 +170,14 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $query = trim((string) ($params['query'] ?? ''));
         $dateFrom = trim((string) ($params['date_from'] ?? ''));
         $dateTo = trim((string) ($params['date_to'] ?? ''));
+        $forceRefresh = !empty($params['force_refresh']);
         $ttl = (int) ($params['ttl'] ?? SANCUS_NIGHTLY_CACHE_TTL);
         if ($ttl < 60) {
             $ttl = SANCUS_NIGHTLY_CACHE_TTL;
         }
+
+        project_reset_data_cached_at();
+        project_set_force_refresh($forceRefresh);
 
         $resolved = project_load_resolve_search($company, $query, $ttl);
         if ($resolved === null) {
@@ -224,6 +228,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
             'ttl' => $ttl,
+            'force_refresh' => $forceRefresh,
+            'data_cached_at' => project_get_data_cached_at(),
             'projects' => $resolved['projects'] ?? [],
             'workorders' => $resolved['workorders'] ?? [],
             'job_nos' => $jobNos,
@@ -272,8 +278,16 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
     $dateFrom = (string) ($state['date_from'] ?? '');
     $dateTo = (string) ($state['date_to'] ?? '');
     $ttl = (int) ($state['ttl'] ?? 3600);
+    $forceRefresh = !empty($state['force_refresh']);
     $jobNos = is_array($state['job_nos'] ?? null) ? $state['job_nos'] : [];
     $jobTotal = max(1, (int) ($state['job_total'] ?? count($jobNos)));
+
+    project_set_force_refresh($forceRefresh);
+    project_reset_data_cached_at();
+    $priorCachedAt = (int) ($state['data_cached_at'] ?? 0);
+    if ($priorCachedAt > 0) {
+        project_note_data_cached_at($priorCachedAt);
+    }
 
     if ($step === 'posten') {
         $offset = (int) ($state['posten_offset'] ?? 0);
@@ -282,6 +296,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $state['posten'] = array_merge(is_array($state['posten'] ?? null) ? $state['posten'] : [], $fetched);
         $offset += count($chunk);
         $state['posten_offset'] = $offset;
+        $state['data_cached_at'] = project_get_data_cached_at();
         project_load_state_write($loadId, $state);
 
         $ratio = min(1, $offset / $jobTotal);
@@ -322,6 +337,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             $state['contract_planning'] = [];
         }
         $state['planning_offset'] = 0;
+        $state['data_cached_at'] = project_get_data_cached_at();
         project_load_state_write($loadId, $state);
 
         return [
@@ -344,6 +360,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         );
         $offset += count($chunk);
         $state['planning_offset'] = $offset;
+        $state['data_cached_at'] = project_get_data_cached_at();
         project_load_state_write($loadId, $state);
 
         $ratio = min(1, $offset / $jobTotal);
@@ -390,6 +407,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $lines = project_enrich_project_status($lines, $projects);
         $lines = project_enrich_details_names($company, $lines, $ttl);
 
+        $dataCachedAt = project_get_data_cached_at() ?? time();
         $overview = [
             'projects' => $projects,
             'lines' => $lines,
@@ -401,6 +419,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'focus_project' => (string) ($state['focus_project'] ?? ''),
             'query' => (string) ($state['query'] ?? ''),
             'mode' => (string) ($state['mode'] ?? ''),
+            'data_cached_at' => $dataCachedAt,
         ];
 
         $resultId = 'r_' . bin2hex(random_bytes(12));
@@ -410,6 +429,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'created_at' => time(),
         ]);
         project_load_state_delete($loadId);
+        project_set_force_refresh(false);
 
         return [
             'ok' => true,

@@ -240,6 +240,7 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'date_from' => portal_parse_date_param((string) ($_REQUEST['date_from'] ?? '')),
             'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
             'ttl' => SANCUS_NIGHTLY_CACHE_TTL,
+            'force_refresh' => in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true),
         ]);
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $loadStepError) {
@@ -297,6 +298,7 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
 $searchQuery = trim((string) ($_GET['contract'] ?? ''));
 $focusProject = trim((string) ($_GET['focus'] ?? ''));
 $resultId = trim((string) ($_GET['result'] ?? ''));
+$forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
 $contractNo = '';
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
 $dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
@@ -326,6 +328,7 @@ $totalMaterialMoney = 0.0;
 $totalHoursMoney = 0.0;
 $totalKilometersMoney = 0.0;
 $asyncLoad = false;
+$dataCachedAt = null;
 
 auth_set_current_company_context($company);
 
@@ -343,6 +346,8 @@ try {
             $customerNo = (string) ($overview['customer_no'] ?? '');
             $contractValue = array_key_exists('contract_value', $overview) ? $overview['contract_value'] : null;
             $contractNo = (string) ($overview['contract_no'] ?? '');
+            $cachedAtRaw = (int) ($overview['data_cached_at'] ?? 0);
+            $dataCachedAt = $cachedAtRaw > 0 ? $cachedAtRaw : null;
             if ($focusProject === '') {
                 $focusProject = (string) ($overview['focus_project'] ?? '');
             }
@@ -408,6 +413,43 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         .sancus-header-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-left: auto; }
         .sancus-card { background: var(--kvt-panel-bg); border: 1px solid var(--kvt-line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
         .sancus-card h1, .sancus-card h2 { margin: 0 0 12px; color: var(--kvt-text); }
+        .sancus-section-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 6px 14px;
+            margin: 0 0 12px;
+        }
+        .sancus-section-head h2 { margin: 0; }
+        .sancus-data-age {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--kvt-muted);
+            font-size: 0.82rem;
+            font-weight: 500;
+            line-height: 1.3;
+        }
+        .sancus-data-age-refresh {
+            appearance: none;
+            background: transparent;
+            border: 1px solid var(--kvt-line);
+            color: var(--kvt-muted);
+            border-radius: 8px;
+            padding: 2px 8px;
+            font: inherit;
+            font-size: 0.9rem;
+            line-height: 1.2;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .sancus-data-age-refresh:hover {
+            color: var(--kvt-main-blue);
+            border-color: var(--kvt-main-blue);
+        }
         .sancus-subtitle { color: var(--kvt-muted); margin: 6px 0 0; }
         .sancus-form { display: grid; gap: 12px; }
         .sancus-form-grid,
@@ -805,6 +847,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             data-date-from="<?= portal_h($dateFrom) ?>"
             data-date-to="<?= portal_h($dateTo) ?>"
             data-focus="<?= portal_h($focusProject) ?>"
+            data-refresh="<?= $forceRefresh ? '1' : '0' ?>"
             data-lang="<?= portal_h(getCurrentLanguage()) ?>">
             <h2><?= portal_h(LOC('sancus.loader.loading')) ?></h2>
             <p class="sancus-progress-label" id="sancus-progress-label"><?= portal_h(LOC('sancus.progress.resolve')) ?></p>
@@ -816,8 +859,41 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
     <?php endif; ?>
 
     <?php if ($view === 'posten'): ?>
+        <?php
+            $refreshQuery = $contractNo !== '' ? $contractNo : $searchQuery;
+            $refreshParams = [
+                'company' => $company,
+                'contract' => $refreshQuery,
+                'refresh' => '1',
+                'result' => null,
+            ];
+            if ($focusProject !== '') {
+                $refreshParams['focus'] = $focusProject;
+            }
+            if ($dateFrom !== '') {
+                $refreshParams['date_from'] = $dateFrom;
+            }
+            if ($dateTo !== '') {
+                $refreshParams['date_to'] = $dateTo;
+            }
+            $refreshUrl = portal_url($refreshParams);
+            $dataAgeLabel = $dataCachedAt !== null
+                ? LOC('sancus.data_age', project_format_data_age((int) $dataCachedAt))
+                : '';
+        ?>
         <section class="sancus-card">
-            <h2><?= portal_h(LOC('sancus.section.posten')) ?></h2>
+            <div class="sancus-section-head">
+                <h2><?= portal_h(LOC('sancus.section.posten')) ?></h2>
+                <div class="sancus-data-age">
+                    <?php if ($dataAgeLabel !== ''): ?>
+                        <span><?= portal_h($dataAgeLabel) ?></span>
+                    <?php endif; ?>
+                    <a class="sancus-data-age-refresh contract-nav"
+                        href="<?= portal_h($refreshUrl) ?>"
+                        title="<?= portal_h(LOC('sancus.btn.refresh')) ?>"
+                        aria-label="<?= portal_h(LOC('sancus.btn.refresh')) ?>">↻</a>
+                </div>
+            </div>
             <div class="sancus-meta">
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
@@ -1422,6 +1498,9 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         if (loadId) {
             body.set('load_id', loadId);
         }
+        if ((panel.getAttribute('data-refresh') || '') === '1') {
+            body.set('refresh', '1');
+        }
 
         return fetch('index.php', {
             method: 'POST',
@@ -1454,6 +1533,9 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 }
                 if (dt) {
                     redirectParams.set('date_to', dt);
+                }
+                if ((panel.getAttribute('data-refresh') || '') === '1') {
+                    redirectParams.set('refresh', '1');
                 }
                 window.location.href = 'index.php?' + redirectParams.toString();
                 return;
