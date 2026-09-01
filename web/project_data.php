@@ -9,7 +9,7 @@ require_once __DIR__ . '/odata.php';
 /**
  * Constants
  */
-const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
+const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
 const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Job_Task_No,Line_No,Type,No,Description,Planning_Date,Qty_to_Transfer_to_Journal,Unit_Cost_LCY,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No';
@@ -279,6 +279,8 @@ function project_normalize_posten_row(array $row): array
         $quantity = abs($quantity);
     }
 
+    $documentNo = trim((string) ($row['Document_No'] ?? ''));
+
     return [
         'entry_no' => (int) ($row['Entry_No'] ?? 0),
         'job_no' => trim((string) ($row['Job_No'] ?? '')),
@@ -300,6 +302,7 @@ function project_normalize_posten_row(array $row): array
         'unbooked_cost' => 0.0,
         'is_unbooked_cost_line' => false,
         'revenue' => $revenue,
+        'invoice_no' => ($typeLabel === 'Gefactureerd' && $documentNo !== '') ? $documentNo : '',
     ];
 }
 
@@ -441,6 +444,7 @@ function project_normalize_planning_row(array $row): array
         'cost' => 0.0,
         'unbooked_cost' => 0.0,
         'is_unbooked_cost_line' => false,
+        'invoice_no' => '',
     ];
 
     $lines = [];
@@ -450,6 +454,7 @@ function project_normalize_planning_row(array $row): array
             'type_label' => 'Factuur',
             'description' => $postedInvoiceNo,
             'revenue' => $invoiceAmount,
+            'invoice_no' => $postedInvoiceNo,
         ]);
     }
 
@@ -459,6 +464,7 @@ function project_normalize_planning_row(array $row): array
             'description' => $postedCreditMemoNo,
             // Credietnota blijft in Opbrengsten, maar als negatief bedrag
             'revenue' => -abs($invoiceAmount),
+            'invoice_no' => $postedCreditMemoNo,
         ]);
     }
 
@@ -1569,6 +1575,13 @@ function project_merge_identical_type_lines(string $typeLabel, array $lines): ar
         $merged[$key]['cost'] = (float) ($merged[$key]['cost'] ?? 0) + (float) ($line['cost'] ?? 0);
         $merged[$key]['unbooked_cost'] = (float) ($merged[$key]['unbooked_cost'] ?? 0) + (float) ($line['unbooked_cost'] ?? 0);
         $merged[$key]['revenue'] = (float) ($merged[$key]['revenue'] ?? 0) + (float) ($line['revenue'] ?? 0);
+        $existingInvoiceNo = trim((string) ($merged[$key]['invoice_no'] ?? ''));
+        $newInvoiceNo = trim((string) ($line['invoice_no'] ?? ''));
+        if ($existingInvoiceNo !== '' && $newInvoiceNo !== '' && $existingInvoiceNo !== $newInvoiceNo) {
+            $merged[$key]['invoice_no'] = '';
+        } elseif ($existingInvoiceNo === '' && $newInvoiceNo !== '') {
+            $merged[$key]['invoice_no'] = $newInvoiceNo;
+        }
         if (!empty($line['is_unbooked_cost_line'])) {
             $merged[$key]['is_unbooked_cost_line'] = true;
         }
@@ -1993,6 +2006,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
             $rows[$idx]['type_detail'] = (string) ($line['type_detail'] ?? '');
             $rows[$idx]['description'] = (string) ($line['description'] ?? '');
             $rows[$idx]['posting_date'] = (string) ($line['posting_date'] ?? '');
+            $rows[$idx]['invoice_no'] = (string) ($line['invoice_no'] ?? '');
             $rows[$idx]['unbooked'] = !empty($line['unbooked']);
             $rows[$idx]['placeholder_key'] = (string) ($line['placeholder_key'] ?? 'unbooked');
             return;
@@ -2020,6 +2034,7 @@ function project_flatten_from_node(array $node, string $startLevel, array &$rows
                     : null,
                 'cost' => (float) ($line['cost'] ?? 0),
                 'revenue' => (float) ($line['revenue'] ?? 0),
+                'invoice_no' => (string) ($line['invoice_no'] ?? ''),
                 'unbooked' => !empty($line['unbooked']),
                 'placeholder_key' => (string) ($line['placeholder_key'] ?? 'unbooked'),
             ];

@@ -142,12 +142,18 @@ function portal_parse_date_param(string $value): string
     return $value;
 }
 
-function portal_amount_cell(float $amount, string $kind, string $extraClass = ''): string
+function portal_amount_cell(float $amount, string $kind, string $extraClass = '', string $subLabel = ''): string
 {
     $classes = trim('num ' . portal_amount_class($amount, $kind) . ' ' . $extraClass);
-    return '<td class="' . portal_h($classes) . '">'
-        . portal_h(portal_format_amount($amount))
-        . '</td>';
+    if ($subLabel !== '') {
+        $classes .= ' has-amount-sub';
+    }
+    $html = '<td class="' . portal_h($classes) . '">';
+    $html .= '<span class="amount-value">' . portal_h(portal_format_amount($amount)) . '</span>';
+    if ($subLabel !== '') {
+        $html .= '<span class="amount-sub">' . portal_h($subLabel) . '</span>';
+    }
+    return $html . '</td>';
 }
 
 function portal_profit_cell(float $cost, float $revenue, bool $show): string
@@ -532,6 +538,17 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         table.sancus-table th, table.sancus-table td { border-bottom: 1px solid var(--kvt-line); padding: 10px 8px; text-align: left; vertical-align: top; }
         table.sancus-table th { color: var(--kvt-muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
         table.sancus-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        table.sancus-table td.num.has-amount-sub { white-space: normal; }
+        table.sancus-table td.num .amount-value { display: block; }
+        table.sancus-table td.num .amount-sub {
+            display: block;
+            margin-top: 2px;
+            font-size: 0.78em;
+            font-weight: 400;
+            color: #4b5563;
+            line-height: 1.25;
+        }
+        table.sancus-table tr.is-line td.num .amount-sub { opacity: 0.85; }
         table.sancus-table td.amount-cost { color: var(--kvt-danger); font-weight: 700; }
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
@@ -1002,6 +1019,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                 $isUnbooked = !empty($row['unbooked']);
                                 $rowCost = (float) ($row['cost'] ?? 0);
                                 $rowRevenue = (float) ($row['revenue'] ?? 0);
+                                $invoiceNo = trim((string) ($row['invoice_no'] ?? ''));
                                 $showProfit = !$isLine && (
                                     !empty($row['show_details'])
                                     || !empty($row['show_component'])
@@ -1089,7 +1107,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                         <td class="unbooked-msg" colspan="3"><?= portal_h(LOC($placeholderLoc)) ?></td>
                                     <?php else: ?>
                                         <?= portal_amount_cell($rowCost, 'cost', trim($hoursZoneClass)) ?>
-                                        <?= portal_amount_cell($rowRevenue, 'revenue') ?>
+                                        <?= portal_amount_cell($rowRevenue, 'revenue', '', $invoiceNo) ?>
                                         <?= portal_profit_cell($rowCost, $rowRevenue, $showProfit) ?>
                                     <?php endif; ?>
                                 </tr>
