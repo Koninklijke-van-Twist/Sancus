@@ -217,6 +217,58 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             project_record_contract_search($company, $recordKey, 'contract');
         }
 
+        // Normale load (geen ↻): één request i.p.v. tientallen chunk-rondes.
+        // Bij warme disk-cache is round-trip-overhead de bottleneck, niet BC.
+        if (!$forceRefresh) {
+            @set_time_limit(180);
+            if (($resolved['mode'] ?? '') === 'project') {
+                $overview = project_fetch_project_overview(
+                    $company,
+                    (string) ($resolved['focus_project'] ?? $query),
+                    $dateFrom,
+                    $dateTo,
+                    $ttl
+                );
+            } else {
+                $overview = project_fetch_contract_overview(
+                    $company,
+                    (string) ($resolved['contract_no'] ?? $query),
+                    $dateFrom,
+                    $dateTo,
+                    $ttl
+                );
+            }
+
+            $overview['focus_project'] = (string) ($resolved['focus_project'] ?? ($overview['focus_project'] ?? ''));
+            $overview['query'] = $query;
+            $overview['mode'] = (string) ($resolved['mode'] ?? ($overview['mode'] ?? ''));
+            $overview['contract_no'] = (string) ($overview['contract_no'] ?? ($resolved['contract_no'] ?? ''));
+            $overview['data_cached_at'] = project_get_data_cached_at() ?? time();
+
+            $resultId = 'r_' . bin2hex(random_bytes(12));
+            project_load_state_write($resultId, [
+                'kind' => 'result',
+                'overview' => $overview,
+                'created_at' => time(),
+            ]);
+            project_set_force_refresh(false);
+
+            return [
+                'ok' => true,
+                'done' => true,
+                'result_id' => $resultId,
+                'progress' => 100,
+                'label' => 'done',
+                'meta' => [
+                    'contract_no' => (string) ($overview['contract_no'] ?? ''),
+                    'focus_project' => (string) ($overview['focus_project'] ?? ''),
+                    'query' => $query,
+                    'lines' => count($overview['lines'] ?? []),
+                    'projects' => count($overview['projects'] ?? []),
+                ],
+            ];
+        }
+
         $loadId = bin2hex(random_bytes(16));
         $jobNos = is_array($resolved['job_nos'] ?? null) ? array_values($resolved['job_nos']) : [];
         $state = [

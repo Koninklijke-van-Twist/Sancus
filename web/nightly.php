@@ -3,6 +3,7 @@
 /**
  * Nightly cache warm-up (GET).
  * Contracten die in de afgelopen 30 dagen handmatig zijn opgezocht.
+ * Haalt altijd opnieuw uit BC en overschrijft de cache.
  * Cache-TTL = SANCUS_NIGHTLY_CACHE_TTL (~tot de volgende nightly-run).
  */
 

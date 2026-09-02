@@ -23,6 +23,7 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     consolelog("Fetching $url\n");
     $ttlSeconds = max(1, (int) $ttlSeconds);
     maybe_cleanup_expired_cache_files();
+    $GLOBALS['ODATA_LAST_CACHED_AT'] = null;
 
     $cacheKey = build_cache_key($url, $auth);
     $cachePath = cache_path_for_key($cacheKey);
@@ -33,6 +34,10 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
         $cached = read_cache_payload($cachePath, $ttlSeconds);
         if ($cached['valid']) {
             consolelog("Returning data.\n");
+            $cachedAt = (int) ($cached['cached_at'] ?? 0);
+            if ($cachedAt > 0) {
+                $GLOBALS['ODATA_LAST_CACHED_AT'] = $cachedAt;
+            }
             return $cached['data'];
         }
 
@@ -58,9 +63,20 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     }
 
     consolelog("Fetched. Now caching...\n");
+    $now = time();
     write_cache_json($cachePath, $all, $ttlSeconds, $url);
+    $GLOBALS['ODATA_LAST_CACHED_AT'] = $now;
     consolelog("Done, returning data.\n");
     return $all;
+}
+
+/**
+ * cached_at van de laatste odata_get_all-aanroep (cache-hit of verse write).
+ */
+function odata_last_cached_at(): ?int
+{
+    $value = $GLOBALS['ODATA_LAST_CACHED_AT'] ?? null;
+    return is_int($value) && $value > 0 ? $value : null;
 }
 
 function odata_get_json(string $url, array $auth): array
@@ -186,23 +202,35 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds): array
 
     if (isset($payload['_meta']) && isset($payload['data']) && is_array($payload['data'])) {
         $expiresAt = (int) ($payload['_meta']['expires_at'] ?? 0);
+        $cachedAt = (int) ($payload['_meta']['cached_at'] ?? 0);
         if ($expiresAt > 0 && time() <= $expiresAt) {
-            return ['valid' => true, 'delete' => false, 'data' => $payload['data']];
+            return [
+                'valid' => true,
+                'delete' => false,
+                'data' => $payload['data'],
+                'cached_at' => $cachedAt,
+            ];
         }
 
-        return ['valid' => false, 'delete' => true, 'data' => []];
+        return ['valid' => false, 'delete' => true, 'data' => [], 'cached_at' => 0];
     }
 
     if ($fallbackTtlSeconds > 0) {
-        $age = time() - (int) @filemtime($path);
+        $mtime = (int) @filemtime($path);
+        $age = time() - $mtime;
         if ($age >= 0 && $age < $fallbackTtlSeconds) {
-            return ['valid' => true, 'delete' => false, 'data' => $payload];
+            return [
+                'valid' => true,
+                'delete' => false,
+                'data' => $payload,
+                'cached_at' => $mtime > 0 ? $mtime : 0,
+            ];
         }
 
-        return ['valid' => false, 'delete' => true, 'data' => []];
+        return ['valid' => false, 'delete' => true, 'data' => [], 'cached_at' => 0];
     }
 
-    return ['valid' => false, 'delete' => false, 'data' => []];
+    return ['valid' => false, 'delete' => false, 'data' => [], 'cached_at' => 0];
 }
 function cache_path_for_key(string $cacheKey): string
 {

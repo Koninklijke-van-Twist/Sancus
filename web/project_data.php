@@ -122,9 +122,9 @@ function project_fetch_rows(string $company, string $entitySet, array $query, in
 
     $rows = odata_get_all($url, $auth, $ttl);
 
-    $meta = odata_cache_read_payload_meta($cachePath);
-    if (is_array($meta)) {
-        project_note_data_cached_at((int) ($meta['cached_at'] ?? 0));
+    $cachedAt = odata_last_cached_at();
+    if ($cachedAt !== null) {
+        project_note_data_cached_at($cachedAt);
     }
 
     return $rows;
@@ -1465,6 +1465,7 @@ function project_fetch_project_overview(
 
 /**
  * Warm OData-cache voor recente contract-/projectzoekopdrachten.
+ * Overschrijft bestaande cache altijd (force refresh → opnieuw uit BC).
  *
  * @return array{
  *   searches:int,
@@ -1478,45 +1479,50 @@ function project_warm_contract_searches(int $maxAgeSeconds, int $ttl): array
     $warmed = [];
     $failed = [];
 
-    foreach ($searches as $search) {
-        $company = trim((string) ($search['company'] ?? ''));
-        $query = trim((string) ($search['contract'] ?? ''));
-        $kind = strtolower(trim((string) ($search['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
-        if ($company === '' || $query === '') {
-            continue;
-        }
+    project_set_force_refresh(true);
+    try {
+        foreach ($searches as $search) {
+            $company = trim((string) ($search['company'] ?? ''));
+            $query = trim((string) ($search['contract'] ?? ''));
+            $kind = strtolower(trim((string) ($search['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
+            if ($company === '' || $query === '') {
+                continue;
+            }
 
-        try {
-            auth_set_current_company_context($company);
-            if ($kind === 'project') {
-                $overview = project_fetch_project_overview($company, $query, '', '', $ttl);
-            } else {
-                $overview = project_fetch_contract_overview($company, $query, '', '', $ttl);
-                // Oude entries zonder kind: als contract leeg is, probeer als project
-                if (($overview['projects'] ?? []) === [] && ($overview['lines'] ?? []) === []) {
+            try {
+                auth_set_current_company_context($company);
+                if ($kind === 'project') {
                     $overview = project_fetch_project_overview($company, $query, '', '', $ttl);
-                    if (($overview['projects'] ?? []) !== [] || ($overview['lines'] ?? []) !== []) {
-                        $kind = 'project';
-                        project_record_contract_search($company, $query, 'project');
+                } else {
+                    $overview = project_fetch_contract_overview($company, $query, '', '', $ttl);
+                    // Oude entries zonder kind: als contract leeg is, probeer als project
+                    if (($overview['projects'] ?? []) === [] && ($overview['lines'] ?? []) === []) {
+                        $overview = project_fetch_project_overview($company, $query, '', '', $ttl);
+                        if (($overview['projects'] ?? []) !== [] || ($overview['lines'] ?? []) !== []) {
+                            $kind = 'project';
+                            project_record_contract_search($company, $query, 'project');
+                        }
                     }
                 }
+                $warmed[] = [
+                    'company' => $company,
+                    'contract' => $query,
+                    'kind' => $kind,
+                    'projects' => count($overview['projects'] ?? []),
+                    'lines' => count($overview['lines'] ?? []),
+                    'workorders' => count($overview['workorders'] ?? []),
+                ];
+            } catch (Throwable $error) {
+                $failed[] = [
+                    'company' => $company,
+                    'contract' => $query,
+                    'kind' => $kind,
+                    'error' => $error->getMessage(),
+                ];
             }
-            $warmed[] = [
-                'company' => $company,
-                'contract' => $query,
-                'kind' => $kind,
-                'projects' => count($overview['projects'] ?? []),
-                'lines' => count($overview['lines'] ?? []),
-                'workorders' => count($overview['workorders'] ?? []),
-            ];
-        } catch (Throwable $error) {
-            $failed[] = [
-                'company' => $company,
-                'contract' => $query,
-                'kind' => $kind,
-                'error' => $error->getMessage(),
-            ];
         }
+    } finally {
+        project_set_force_refresh(false);
     }
 
     return [
