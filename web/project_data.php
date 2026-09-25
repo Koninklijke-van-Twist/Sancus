@@ -111,13 +111,28 @@ function project_fetch_rows(string $company, string $entitySet, array $query, in
 {
     global $baseUrl;
 
-    $environment = auth_get_environment_for_company($company, $ttl);
-    $auth = auth_get_auth_for_environment($environment);
-    $url = project_company_entity_url($baseUrl, $environment, $company, $entitySet, $query);
-    $cachePath = cache_path_for_key(build_cache_key($url, $auth));
+    // Lege $baseUrl is geldig in Mímir-modus; odata_get_all vertaalt het pad.
+    $odataBaseUrl = trim((string) ($baseUrl ?? ''));
+    $mimirEnabled = function_exists('odata_mimir_enabled') && odata_mimir_enabled();
+    if ($odataBaseUrl === '' && !$mimirEnabled) {
+        throw new RuntimeException('baseUrl ontbreekt in auth.php.');
+    }
 
-    if (project_is_force_refresh() && is_file($cachePath)) {
-        @unlink($cachePath);
+    $environment = auth_get_environment_for_company($company, $ttl);
+    // Leeg environment maakt een protocol-relatieve URL (//ODataV4/...) die Mímir niet kan vertalen.
+    if ($environment === '') {
+        throw new RuntimeException('Geen environment beschikbaar.');
+    }
+
+    $auth = auth_get_auth_for_environment($environment);
+    $url = project_company_entity_url($odataBaseUrl, $environment, $company, $entitySet, $query);
+
+    if (!$mimirEnabled) {
+        $cachePath = cache_path_for_key(build_cache_key($url, $auth));
+
+        if (project_is_force_refresh() && is_file($cachePath)) {
+            @unlink($cachePath);
+        }
     }
 
     $rows = odata_get_all($url, $auth, $ttl);
