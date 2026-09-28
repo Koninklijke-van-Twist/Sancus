@@ -26,24 +26,45 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 3600): array
     consolelog("Fetching $url\n");
     $ttlSeconds = max(0, (int) $ttlSeconds);
 
-    if (odata_mimir_api_key() !== '') {
-        // Mímir beheert de BC-cache (max_age); Sancus-filecache wordt overgeslagen.
-        // 0 blijft 0 (vers). 3600 geldt alleen als de caller geen TTL meegeeft.
-        // Force-refresh (handmatig of hourly/nightly) vraagt ook verse data.
-        $GLOBALS['ODATA_LAST_CACHED_AT'] = null;
-        $mimirTtl = $ttlSeconds;
-        if (function_exists('project_is_force_refresh') && project_is_force_refresh()) {
-            $mimirTtl = 0;
-        }
-        return odata_mimir_fetch_all($url, $mimirTtl);
+    if (odata_mimir_enabled()) {
+        return odata_mimir_or_direct(
+            static function () use ($url, $ttlSeconds): array {
+                // Mímir beheert de BC-cache (max_age); Sancus-filecache wordt overgeslagen.
+                // 0 blijft 0 (vers). 3600 geldt alleen als de caller geen TTL meegeeft.
+                // Force-refresh (handmatig of hourly/nightly) vraagt ook verse data.
+                $GLOBALS['ODATA_LAST_CACHED_AT'] = null;
+                $mimirTtl = $ttlSeconds;
+                if (function_exists('project_is_force_refresh') && project_is_force_refresh()) {
+                    $mimirTtl = 0;
+                }
+                return odata_mimir_fetch_all_impl($url, $mimirTtl);
+            },
+            static function () use ($url, $auth, $ttlSeconds): array {
+                $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
+                return odata_get_all_direct(odata_bc_url_from_odata_url($url), $directAuth, $ttlSeconds);
+            }
+        );
     }
 
-    $ttlSeconds = max(1, $ttlSeconds);
+    return odata_get_all_direct($url, $auth, $ttlSeconds);
+}
+
+function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 3600): array
+{
+    $ttlSeconds = max(1, (int) $ttlSeconds);
+    if (isset($GLOBALS['SANCUS_ODATA_BC_FETCH']) && is_callable($GLOBALS['SANCUS_ODATA_BC_FETCH'])) {
+        return $GLOBALS['SANCUS_ODATA_BC_FETCH']($url, $auth, $ttlSeconds);
+    }
+
     maybe_cleanup_expired_cache_files();
     $GLOBALS['ODATA_LAST_CACHED_AT'] = null;
 
     $cacheKey = build_cache_key($url, $auth);
     $cachePath = cache_path_for_key($cacheKey);
+
+    if (function_exists('project_is_force_refresh') && project_is_force_refresh() && is_file($cachePath)) {
+        @unlink($cachePath);
+    }
 
     if (is_file($cachePath)) {
 
@@ -160,7 +181,14 @@ function odata_auth_php_path(): string
 
 function build_cache_key(string $url, array $auth): string
 {
-    require odata_auth_php_path();
+    // Directe BC-cache, ook de fallback nadat Mímir is uitgevallen, leest auth.php.
+    // Ontbreekt het bestand, dan blijven de al geladen globals staan (geen fatal).
+    if (!odata_mimir_enabled() || odata_mimir_circuit_open()) {
+        $authPath = odata_auth_php_path();
+        if (is_file($authPath)) {
+            require $authPath;
+        }
+    }
     require_once __DIR__ . "/auth_helper.php";
     $user = (string) ($auth['user'] ?? '');
     $envFragment = auth_get_environment_key_fragment();
