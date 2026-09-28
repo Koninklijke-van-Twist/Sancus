@@ -40,7 +40,8 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 3600): array
                 return odata_mimir_fetch_all_impl($url, $mimirTtl);
             },
             static function () use ($url, $auth, $ttlSeconds): array {
-                $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
+                $env = odata_bc_environment_from_odata_url($url);
+                $directAuth = odata_bc_auth_for_company_env($env, $auth) ?? $auth;
                 return odata_get_all_direct(odata_bc_url_from_odata_url($url), $directAuth, $ttlSeconds);
             }
         );
@@ -181,17 +182,29 @@ function odata_auth_php_path(): string
 
 function build_cache_key(string $url, array $auth): string
 {
-    // Directe BC-cache, ook de fallback nadat Mímir is uitgevallen, leest auth.php.
-    // Ontbreekt het bestand, dan blijven de al geladen globals staan (geen fatal).
+    // Directe BC-cache leest auth.php naar $GLOBALS, zonder gezette waarden te overschrijven.
     if (!odata_mimir_enabled() || odata_mimir_circuit_open()) {
-        $authPath = odata_auth_php_path();
-        if (is_file($authPath)) {
-            require $authPath;
-        }
+        odata_load_bc_config();
     }
     require_once __DIR__ . "/auth_helper.php";
     $user = (string) ($auth['user'] ?? '');
-    $envFragment = auth_get_environment_key_fragment();
+    $envFragment = '';
+    if (function_exists('odata_bc_environment_from_odata_url')) {
+        $fromUrl = odata_bc_environment_from_odata_url($url);
+        if (is_string($fromUrl) && $fromUrl !== '' && strcasecmp($fromUrl, 'mimir') !== 0) {
+            $envFragment = $fromUrl;
+        }
+    }
+    if ($envFragment === '') {
+        $parts = preg_split('/\s*,\s*/', auth_get_environment_key_fragment()) ?: [];
+        $kept = [];
+        foreach ($parts as $part) {
+            if ($part !== '' && strcasecmp($part, 'mimir') !== 0) {
+                $kept[] = $part;
+            }
+        }
+        $envFragment = implode(',', $kept);
+    }
     return $url . '|' . $user . '|' . $envFragment;
 }
 
