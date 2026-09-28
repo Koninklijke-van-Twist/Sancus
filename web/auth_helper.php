@@ -79,7 +79,9 @@ function auth_get_active_environments(): array
     }
 
     // Geen lokale BC-config: bij Mímir environments afleiden uit companies.php.
-    if (auth_mimir_enabled()) {
+    // Na een Mímir-fout in dit proces niet opnieuw Mímir aanroepen (circuit + cache-key).
+    $mimirCircuitOpen = function_exists('odata_mimir_circuit_open') && odata_mimir_circuit_open();
+    if (auth_mimir_enabled() && !$mimirCircuitOpen) {
         $cached = $GLOBALS['demeter_active_environments'] ?? null;
         if (is_array($cached) && $cached !== []) {
             return array_values(array_map('strval', $cached));
@@ -390,7 +392,7 @@ function auth_discover_companies_via_mimir(): array
  */
 function auth_discover_companies_across_active_environments(int $ttlSeconds = 300): array
 {
-    // Mímir: companies + environments uit Mímir API — geen $auth_list/$baseUrl nodig.
+    // Mímir eerst. Bij een fout haalt odata_mimir_companies_as_rows de pre-Mímir BC-lijst op.
     if (auth_mimir_enabled()) {
         return auth_discover_companies_via_mimir();
     }

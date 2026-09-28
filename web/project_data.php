@@ -54,7 +54,16 @@ function project_company_entity_url(string $baseUrl, string $environment, string
 {
     $safeCompany = project_escape_odata_string($company);
     $companySegment = "Company('" . rawurlencode($safeCompany) . "')";
-    $url = rtrim($baseUrl, '/') . '/' . rawurlencode($environment) . '/ODataV4/' . $companySegment . '/' . rawurlencode($entitySet);
+    // Zolang Mímir in dit proces werkt is de host synthetisch; na een fout de pre-Mímir BC-URL.
+    $useMimirHost = function_exists('odata_mimir_enabled') && odata_mimir_enabled()
+        && !(function_exists('odata_mimir_circuit_open') && odata_mimir_circuit_open());
+    if ($useMimirHost) {
+        $env = trim($environment) !== '' ? $environment : 'mimir';
+        $prefix = 'https://mimir.invalid/' . rawurlencode($env) . '/ODataV4/';
+    } else {
+        $prefix = rtrim($baseUrl, '/') . '/' . rawurlencode($environment) . '/ODataV4/';
+    }
+    $url = $prefix . $companySegment . '/' . rawurlencode($entitySet);
 
     if ($query !== []) {
         $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
@@ -111,9 +120,12 @@ function project_fetch_rows(string $company, string $entitySet, array $query, in
 {
     global $baseUrl;
 
-    // Lege $baseUrl is geldig in Mímir-modus; odata_get_all vertaalt het pad.
+    // Lege $baseUrl is geldig zolang Mímir in dit verzoek nog niet is uitgevallen.
     $odataBaseUrl = trim((string) ($baseUrl ?? ''));
     $mimirEnabled = function_exists('odata_mimir_enabled') && odata_mimir_enabled();
+    $mimirCircuitOpen = $mimirEnabled
+        && function_exists('odata_mimir_circuit_open')
+        && odata_mimir_circuit_open();
     if ($odataBaseUrl === '' && !$mimirEnabled) {
         throw new RuntimeException('baseUrl ontbreekt in auth.php.');
     }
@@ -127,7 +139,8 @@ function project_fetch_rows(string $company, string $entitySet, array $query, in
     $auth = auth_get_auth_for_environment($environment);
     $url = project_company_entity_url($odataBaseUrl, $environment, $company, $entitySet, $query);
 
-    if (!$mimirEnabled) {
+    // Filecache hoort bij het directe BC-pad, ook nadat Mímir in dit proces is uitgevallen.
+    if (!$mimirEnabled || $mimirCircuitOpen) {
         $cachePath = cache_path_for_key(build_cache_key($url, $auth));
 
         if (project_is_force_refresh() && is_file($cachePath)) {
