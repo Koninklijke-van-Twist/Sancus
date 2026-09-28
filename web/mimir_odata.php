@@ -352,9 +352,16 @@ function odata_bc_auth_for_company_env(?string $env, array $passed): ?array
     if ($fromEnv !== null) {
         return $fromEnv;
     }
-    if (odata_auth_is_usable($passed)) {
-        return $passed;
+
+    global $auth_list;
+    $listMissing = !isset($auth_list) || !is_array($auth_list) || $auth_list === [];
+    $primary = odata_bc_environment();
+    $envName = trim((string) $env);
+    $isPrimary = $primary !== null && $envName !== '' && strcasecmp($envName, $primary) === 0;
+    if ($listMissing || $isPrimary) {
+        return odata_bc_auth_for_fallback($passed);
     }
+
     return null;
 }
 
@@ -648,13 +655,7 @@ function odata_direct_company_targets(?string $environmentFilter = null): array
     global $auth_list;
 
     if ($filter !== '' && strcasecmp($filter, 'mimir') !== 0) {
-        $auth = null;
-        if (isset($auth_list) && is_array($auth_list) && isset($auth_list[$filter]) && odata_auth_is_usable($auth_list[$filter])) {
-            $auth = $auth_list[$filter];
-        }
-        if ($auth === null) {
-            $auth = odata_bc_auth_for_company_env($filter, []);
-        }
+        $auth = odata_bc_auth_for_company_env($filter, []);
         if ($auth !== null) {
             $targets[] = ['environment' => $filter, 'auth' => $auth];
         }
