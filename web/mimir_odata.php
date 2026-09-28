@@ -174,10 +174,6 @@ function odata_load_bc_config(): void
     if (!empty($GLOBALS['sancus_bc_auth_load_tried'])) {
         return;
     }
-    if (odata_bc_credentials_configured_from_globals()) {
-        $GLOBALS['sancus_bc_auth_load_tried'] = true;
-        return;
-    }
     $GLOBALS['sancus_bc_auth_load_tried'] = true;
     $path = function_exists('odata_auth_php_path') ? odata_auth_php_path() : (__DIR__ . '/auth.php');
     if (!is_file($path)) {
@@ -356,7 +352,10 @@ function odata_bc_auth_for_company_env(?string $env, array $passed): ?array
     if ($fromEnv !== null) {
         return $fromEnv;
     }
-    return odata_bc_auth_for_fallback($passed);
+    if (odata_auth_is_usable($passed)) {
+        return $passed;
+    }
+    return null;
 }
 
 function odata_bc_credentials_configured_from_globals(): bool

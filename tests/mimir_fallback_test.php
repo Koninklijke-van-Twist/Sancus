@@ -253,6 +253,47 @@ if (fallback_count() !== $loggedBeforeTranslate) {
     fail('een vertaalfout mag geen fallback loggen');
 }
 
+odata_mimir_circuit_reset();
+$mimirApi = 'mimir_test_key_should_not_leak';
+$mimirBase = 'http://127.0.0.1:9';
+$baseUrl = 'https://bc.example:7148/';
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+$auth_list = ['Production' => $auth];
+$GLOBALS['demeter_company_environment_map'] = ['Hunter van Twist' => 'Sandbox'];
+$callsBeforeWrongEnv = count($calls);
+$wrongEnvError = null;
+try {
+    odata_mimir_query('Hunter van Twist', 'AppResource', ['$select' => 'No'], 30);
+    fail('Sandbox zonder eigen auth mag niet op Production-credentials terugvallen');
+} catch (Throwable $exception) {
+    $wrongEnvError = $exception;
+}
+if (!$wrongEnvError instanceof Throwable || strpos($wrongEnvError->getMessage(), 'Mímir') === false) {
+    fail('ontbrekende env-auth moet de Mímir-fout teruggeven');
+}
+if (count($calls) !== $callsBeforeWrongEnv) {
+    fail('credentials van een andere environment mogen niet naar Sandbox: ' . json_encode($calls[$callsBeforeWrongEnv] ?? null));
+}
+if (!odata_mimir_circuit_open()) {
+    fail('een Mímir-verbindingsfout moet het circuit openen');
+}
+$callsBeforePassed = count($calls);
+$passedSandbox = ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'];
+$passedRows = odata_get_all(
+    "https://mimir.invalid/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No",
+    $passedSandbox,
+    20
+);
+$passedCall = $calls[$callsBeforePassed] ?? null;
+$expectedPassedUrl = "https://bc.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No";
+if (($passedRows[0]['No'] ?? '') !== 'WO-1' || !is_array($passedCall) || $passedCall['url'] !== $expectedPassedUrl || $passedCall['user'] !== 'sandbox-user') {
+    fail('meegegeven credentials voor de doel-environment blijven bruikbaar: ' . json_encode($passedCall));
+}
+if (strpos(fallback_log(), 'sandbox-secret') !== false) {
+    fail('log bevat een geheim');
+}
+
 $loggedBeforeRethrow = fallback_count();
 $callsBeforeRethrow = count($calls);
 odata_mimir_circuit_reset();
@@ -358,5 +399,41 @@ if (strpos(fallback_log(), 'loaded-secret') !== false) {
 }
 unset($GLOBALS['odata_auth_php_path']);
 @unlink($tmpAuthPhp);
+
+$tmpAuthList = tempnam(sys_get_temp_dir(), 'sancus-auth-list-');
+if ($tmpAuthList === false) {
+    fail('tempfile voor auth_list kon niet worden gemaakt');
+}
+$tmpAuthListPhp = $tmpAuthList . '.php';
+rename($tmpAuthList, $tmpAuthListPhp);
+file_put_contents($tmpAuthListPhp, <<<'PHP'
+<?php
+$baseUrl = 'https://should-not-replace.example:7148/';
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'file-user', 'pass' => 'file-secret'];
+$auth_list = [
+    'Production' => ['mode' => 'basic', 'user' => 'file-user', 'pass' => 'file-secret'],
+    'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-from-file', 'pass' => 'sandbox-file-secret'],
+];
+PHP
+);
+$GLOBALS['odata_auth_php_path'] = $tmpAuthListPhp;
+unset($GLOBALS['sancus_bc_auth_load_tried']);
+$baseUrl = 'https://already-set.example:7148/';
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+$auth_list = [];
+odata_load_bc_config();
+if ($baseUrl !== 'https://already-set.example:7148/' || ($auth['user'] ?? '') !== 'bcuser') {
+    fail('primaire credentials mogen niet worden overschreven bij het laden van auth_list');
+}
+if (($auth_list['Sandbox']['user'] ?? '') !== 'sandbox-from-file') {
+    fail('auth_list uit auth.php moet geladen worden ook als de primaire auth al gezet is: ' . json_encode($auth_list));
+}
+if (strpos(fallback_log(), 'file-secret') !== false || strpos(fallback_log(), 'sandbox-file-secret') !== false) {
+    fail('log bevat een geheim uit auth_list');
+}
+unset($GLOBALS['odata_auth_php_path']);
+@unlink($tmpAuthListPhp);
 
 echo "OK\n";
