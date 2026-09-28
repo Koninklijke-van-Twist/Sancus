@@ -499,4 +499,58 @@ if (strpos(fallback_log(), 'file-secret') !== false || strpos(fallback_log(), 's
 unset($GLOBALS['odata_auth_php_path']);
 @unlink($tmpAuthListPhp);
 
+require_once dirname(__DIR__) . '/web/project_data.php';
+
+odata_mimir_circuit_reset();
+unset($GLOBALS['sancus_bc_auth_load_tried']);
+unset(
+    $GLOBALS['demeter_company_environment_map'],
+    $GLOBALS['demeter_companies_by_environment'],
+    $GLOBALS['demeter_active_environments']
+);
+$mimirApi = 'mimir_test_key_should_not_leak';
+$mimirBase = 'http://127.0.0.1:9';
+$baseUrl = 'https://bc.example:7148/';
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+unset($auth_list, $GLOBALS['auth_list']);
+$callsBeforePage = count($calls);
+$pageContext = auth_set_current_company_context('KVT Gas', 30);
+if (($pageContext['auth'] ?? null) !== [] || ($pageContext['environment'] ?? '') !== 'Production') {
+    fail('company-context zonder auth_list-entry houdt de lege sentinel in de return: ' . json_encode($pageContext));
+}
+if (($auth['user'] ?? '') !== 'bcuser') {
+    fail('company-context mag een bruikbare $auth niet wissen, kreeg: ' . json_encode($auth));
+}
+if (!odata_mimir_circuit_open() || empty($GLOBALS['sancus_bc_auth_load_tried'])) {
+    fail('paginapad moet de BC-config laden vóórdat de context terugkeert');
+}
+try {
+    $pageRows = project_fetch_rows('KVT Gas', 'AppWerkorders', ['$select' => 'No'], 60);
+} catch (Throwable $pageError) {
+    fail('fetch na company-context gooide de Mímir-fout terug: ' . $pageError->getMessage());
+}
+$pageCall = $calls[$callsBeforePage + 1] ?? null;
+if (($pageRows[0]['No'] ?? '') !== 'WO-1' || !is_array($pageCall) || ($pageCall['user'] ?? '') !== 'bcuser' || strpos((string) ($pageCall['url'] ?? ''), 'https://bc.example:7148/Production/ODataV4/Company(') !== 0) {
+    fail('pagina-fetch moet na company-context naar BC met $auth: ' . json_encode($pageCall));
+}
+
+odata_mimir_circuit_reset();
+unset($GLOBALS['sancus_bc_auth_load_tried']);
+unset(
+    $GLOBALS['demeter_company_environment_map'],
+    $GLOBALS['demeter_companies_by_environment'],
+    $GLOBALS['demeter_active_environments']
+);
+$auth_list = [
+    'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'],
+];
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+$GLOBALS['demeter_company_environment_map'] = ['Hunter van Twist' => 'Sandbox'];
+$listContext = auth_set_current_company_context('Hunter van Twist', 30);
+if (($listContext['auth']['user'] ?? '') !== 'sandbox-user' || ($auth['user'] ?? '') !== 'sandbox-user' || ($environment ?? '') !== 'Sandbox') {
+    fail('een auth_list-entry moet de globale auth nog steeds vervangen: ' . json_encode($listContext));
+}
+
 echo "OK\n";

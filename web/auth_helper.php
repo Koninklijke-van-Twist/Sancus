@@ -577,7 +577,11 @@ function auth_set_current_company_context(?string $company, int $ttlSeconds = 30
         }
 
         $environment = $targetEnvironment;
-        $auth = $targetAuth;
+        // Lege sentinel als er geen entry is. Een bruikbare $auth blijft staan:
+        // pagina's zetten de context vóór de fetch, en de BC-fallback leest die $auth.
+        if ($targetAuth !== [] || !function_exists('odata_auth_is_usable') || !odata_auth_is_usable($auth ?? null)) {
+            $auth = $targetAuth;
+        }
 
         return [
             'environment' => $targetEnvironment,
