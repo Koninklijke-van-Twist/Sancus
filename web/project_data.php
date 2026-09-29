@@ -10,12 +10,12 @@ require_once __DIR__ . '/odata.php';
  * Constants
  */
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
-const SANCUS_PROJECT_SELECT = 'No,Description,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
-const SANCUS_PLANNING_SELECT = 'Contract_No,Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
-const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Job_Task_No,Line_No,Type,No,Description,Planning_Date,Qty_to_Transfer_to_Journal,Unit_Cost_LCY,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No';
+const SANCUS_PROJECT_SELECT = 'No,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
+const SANCUS_PLANNING_SELECT = 'Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
+const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Line_No,Type,No,Description,Planning_Date,Qty_to_Transfer_to_Journal,Unit_Cost_LCY,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No';
 const SANCUS_ITEM_SELECT = 'No,Costing_Method';
-const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Code,Task_Description,Start_Date,Contract_No,Status';
-const SANCUS_CONTRACT_SELECT = 'Contract_No,KVT_Total_Sales_Price';
+const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Code,Task_Description,Start_Date,Status';
+const SANCUS_CONTRACT_SELECT = 'KVT_Total_Sales_Price';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
 const SANCUS_NIGHTLY_CACHE_TTL = 90000;
