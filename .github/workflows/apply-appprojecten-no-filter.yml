@@ -1,0 +1,30 @@
+name: Apply AppProjecten No filter
+
+on:
+  push:
+    branches:
+      - cursor/appprojecten-no-filter-d449
+    paths:
+      - .github/workflows/apply-appprojecten-no-filter.yml
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cursor/appprojecten-no-filter-d449
+      - name: Apply patch and remove carrier files
+        run: |
+          set -euo pipefail
+          base64 -d .github/patches/appprojecten-no-filter.b64 > /tmp/app.patch
+          echo "6e902f738e387157ef87edff56d6e019606d573e2279a751851eaaa5ce4a660e  /tmp/app.patch" | sha256sum -c -
+          git apply --index /tmp/app.patch
+          git rm -r .github/patches
+          git rm -f .github/workflows/apply-appprojecten-no-filter.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Stuur alleen een echt projectnummer naar AppProjecten.No."
+          git push origin HEAD:cursor/appprojecten-no-filter-d449
