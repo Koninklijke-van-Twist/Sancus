@@ -75,8 +75,38 @@ function project_load_resolve_search(
     string $query,
     int $ttl = 3600
 ): ?array {
+    $codes = project_codes_from_user_input($query);
+    if ($codes === []) {
+        return null;
+    }
+
+    $preferred = [];
+    $rest = [];
+    foreach ($codes as $code) {
+        if (stripos($code, 'PRJ') === 0) {
+            $preferred[] = $code;
+        } else {
+            $rest[] = $code;
+        }
+    }
+
+    foreach (array_merge($preferred, $rest) as $code) {
+        $resolved = project_load_resolve_one($company, $code, $ttl);
+        if ($resolved !== null) {
+            return $resolved;
+        }
+    }
+
+    return null;
+}
+
+function project_load_resolve_one(
+    string $company,
+    string $query,
+    int $ttl = 3600
+): ?array {
     $query = trim($query);
-    if ($query === '') {
+    if ($query === '' || !project_is_bc_code($query)) {
         return null;
     }
 
