@@ -34,6 +34,81 @@ function project_escape_odata_string(string $value): string
 }
 
 /**
+ * BC Code-veld (No, contractnummer) is maximaal 20 tekens.
+ * Een geplakte TSV of tabelrij (tabs, kop Nr./Omschrijving) is geen code.
+ */
+function project_is_bc_code(string $value): bool
+{
+    $value = trim($value);
+    if ($value === '' || strlen($value) > 20) {
+        return false;
+    }
+    if (preg_match('/[\t\r\n]/', $value) === 1) {
+        return false;
+    }
+    if (preg_match('/^[A-Za-z][A-Za-z0-9._\-\/]*$/', $value) !== 1) {
+        return false;
+    }
+
+    return preg_match('/\d/', $value) === 1;
+}
+
+function project_is_header_token(string $token): bool
+{
+    $key = strtolower(rtrim(trim($token), '.'));
+    static $headers = [
+        'nr', 'no', 'omschrijving', 'description', 'status', 'project',
+        'projectnr', 'projectnummer', 'naam', 'name', 'klant', 'customer',
+        'taak', 'regel', 'soort', 'type', 'bedrag', 'aantal', 'contract',
+        'contractnr', 'contractnummer',
+    ];
+
+    return in_array($key, $headers, true);
+}
+
+function project_input_is_blob(string $raw): bool
+{
+    if (preg_match('/[\t\r\n]/', $raw) === 1) {
+        return true;
+    }
+
+    return str_contains($raw, '|');
+}
+
+/**
+ * Echte contract- of projectnummers uit het zoekveld.
+ * Koppen (Nr., Omschrijving, …) vallen af; PRJ… en CT… blijven.
+ *
+ * @return list<string>
+ */
+function project_codes_from_user_input(string $raw): array
+{
+    $raw = trim($raw);
+    if ($raw === '') {
+        return [];
+    }
+    if (project_is_bc_code($raw)) {
+        return [$raw];
+    }
+    if (!project_input_is_blob($raw) && !str_contains($raw, ' ')) {
+        return [];
+    }
+
+    $normalized = str_replace(["\r\n", "\r", "\xC2\xA0"], ["\n", "\n", ' '], $raw);
+    $tokens = preg_split('/[\s,;|—–]+/u', $normalized) ?: [];
+    $out = [];
+    foreach ($tokens as $token) {
+        $token = trim((string) $token, " \t\n\r\0\x0B\"'`");
+        if ($token === '' || project_is_header_token($token) || !project_is_bc_code($token)) {
+            continue;
+        }
+        $out[$token] = $token;
+    }
+
+    return array_values($out);
+}
+
+/**
  * Voeg een optioneel datumfilter toe aan een OData $filter-clausule.
  */
 function project_append_date_range_filter(string $filter, string $field, string $dateFrom = '', string $dateTo = ''): string
@@ -336,6 +411,10 @@ function project_normalize_posten_row(array $row): array
 
 function project_fetch_by_contract_no(string $company, string $contractNo, int $ttl = 3600): array
 {
+    $contractNo = trim($contractNo);
+    if (!project_is_bc_code($contractNo)) {
+        return [];
+    }
     $escaped = project_escape_odata_string($contractNo);
     if ($escaped === '') {
         return [];
@@ -363,6 +442,10 @@ function project_fetch_by_contract_no(string $company, string $contractNo, int $
 
 function project_fetch_by_no(string $company, string $projectNo, int $ttl = 3600): ?array
 {
+    $projectNo = trim($projectNo);
+    if (!project_is_bc_code($projectNo)) {
+        return null;
+    }
     $escaped = project_escape_odata_string($projectNo);
     if ($escaped === '') {
         return null;
