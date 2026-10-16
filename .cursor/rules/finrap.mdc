@@ -12,7 +12,7 @@ alwaysApply: true
 
 ## Niet wijzigen
 - Bestand `web/logincheck.php` niet aanpassen.
-- Bestand `web/odata.php` niet aanpassen, behalve de Mímir-fallback (directe BC-route en cache-key). Uitzondering goedgekeurd door Tim Falken op 2026-09-28.
+- Bestand `web/odata.php` niet aanpassen, behalve de Mímir-fallback (directe BC-route en cache-key; uitzondering Tim Falken 2026-09-28) en de login-gate op directe acties plus `cache_status` zonder voorbeeldrijen (beveiligingsfix 2026-10-16).
 - Bestand `web/auth.php` alleen aanpassen na expliciete gebruikersvraag.
 
 ## Data en logica
