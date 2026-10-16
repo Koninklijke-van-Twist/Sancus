@@ -18,8 +18,21 @@ header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
  * Includes/requires
  */
 require_once __DIR__ . '/auth.php';
-require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/odata.php';
+
+$nightlySapi = php_sapi_name();
+$nightlyPresentedSecret = odata_presented_runner_secret();
+$nightlyServerSecret = '';
+if ($nightlySapi !== 'cli') {
+    $nightlyServerSecret = odata_configured_runner_secret(odata_read_auth_file_vars());
+}
+if (!odata_direct_action_skips_login($nightlySapi, $nightlyPresentedSecret, $nightlyServerSecret)) {
+    require_once __DIR__ . '/logincheck.php';
+}
+if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
+
 require_once __DIR__ . '/auth_helper.php';
 require_once __DIR__ . '/project_data.php';
 

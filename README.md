@@ -16,4 +16,6 @@ Met `$mimirApi` gaan OData-fetches en company-discovery eerst naar Mímir. Faalt
 
 `web/index.php`, `web/nightly.php` en `web/hourly.php` laden `auth.php` vóór de OData-calls. Dezelfde fallback geldt voor een live request en voor nightly/hourly, of cron die via HTTP of via `php` (CLI) aanroept. Een CLI-proces houdt de lange Mímir-timeout; een webrequest gebruikt een kortere.
 
-`web/odata.php` blijft verder onaangeroerd. De Mímir-fallback (directe BC-route en cache-key) is een uitzondering, goedgekeurd door Tim Falken op 2026-09-28.
+Directe `odata.php`-acties (`cache_status`, `cache_delete`, `cache_clear` en elke andere `action`) gaan eerst door `login/lib.php` en `$allowedUsers`. `cache_status` stuurt geen voorbeeldrijen of attributes. Een runner mag een actie alleen via CLI of via `$sancusRunnerSecret` / `SANCUS_RUNNER_SECRET` in de header `X-Sancus-Secret` (geen queryparameter, leeg geheim telt niet). `web/nightly.php` laadt `odata.php` alleen als bibliotheek. `web/cache/`, `web/cache/odata/` en `web/data/` zijn met `.htaccess` afgesloten.
+
+De Mímir-fallback in `web/odata.php` (directe BC-route en cache-key) blijft de goedgekeurde uitzondering van Tim Falken op 2026-09-28. De login-gate en het weghalen van voorbeeldrijen uit `cache_status` zijn de beveiligingsfix van 2026-10-16.

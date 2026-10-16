@@ -27,3 +27,9 @@ $baseUrl = "https://my-bc-domain.com:7148/";
 $allowedUsers = [
     "user@domain.nl"
 ];
+
+// Optioneel, alleen als een HTTP-runner odata.php?action=… moet aanroepen.
+// Nightly laadt odata.php als bibliotheek en raakt deze acties niet.
+// Header X-Sancus-Secret moet exact dit geheim zijn. Weglaten: geen anonieme toegang.
+// CLI (php web/nightly.php) heeft dit niet nodig.
+// $sancusRunnerSecret = '';
