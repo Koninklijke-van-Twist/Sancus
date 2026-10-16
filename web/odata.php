@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -542,8 +543,12 @@ function odata_is_direct_request(): bool
 function odata_email_is_allowed(string $email, $allowedUsers): bool
 {
     $email = strtolower(trim($email));
-    if ($email === '' || !is_array($allowedUsers)) {
+    if ($email === '') {
         return false;
+    }
+    // Ontbreekt de lijst of is die leeg: elke ingelogde gebruiker (zelfde semantiek als logincheck).
+    if (!is_array($allowedUsers) || $allowedUsers === []) {
+        return true;
     }
 
     foreach ($allowedUsers as $emailKey => $value) {
