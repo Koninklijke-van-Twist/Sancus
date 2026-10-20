@@ -298,6 +298,210 @@ function project_try_fetch_rows(string $company, string $entitySet, array $query
     }
 }
 
+/**
+ * Meerdere onafhankelijke entity-calls tegelijk via Mímir.
+ * Zonder Mímir, bij één call of na een fout: null. De caller gebruikt dan het bestaande pad.
+ *
+ * @param array<string,array{entity:string,query:array<string,mixed>}> $calls
+ * @return array<string,list<array<string,mixed>>>|null
+ */
+function project_fetch_rows_parallel(string $company, array $calls, int $ttl = 3600): ?array
+{
+    if (count($calls) < 2) {
+        return null;
+    }
+    if (!function_exists('odata_mimir_enabled') || !odata_mimir_enabled() || odata_mimir_circuit_open()) {
+        return null;
+    }
+    if (isset($GLOBALS['SANCUS_ODATA_BC_FETCH']) && is_callable($GLOBALS['SANCUS_ODATA_BC_FETCH'])) {
+        return null;
+    }
+    if (!function_exists('odata_mimir_query_many')) {
+        return null;
+    }
+
+    $mimirTtl = project_is_force_refresh() ? 0 : $ttl;
+    $labels = [];
+    $ordered = [];
+    foreach ($calls as $label => $call) {
+        $labels[] = (string) $label;
+        $ordered[] = [
+            'company' => $company,
+            'table' => (string) ($call['entity'] ?? ''),
+            'query' => is_array($call['query'] ?? null) ? $call['query'] : [],
+            'ttl' => $mimirTtl,
+        ];
+    }
+
+    try {
+        $lists = odata_mimir_query_many($ordered);
+    } catch (Throwable $error) {
+        $message = $error->getMessage();
+        if (strlen($message) > 500) {
+            $message = substr($message, 0, 500) . '…';
+        }
+        if (function_exists('odata_mimir_is_failure') && odata_mimir_is_failure($error) && function_exists('odata_mimir_log_fallback')) {
+            odata_mimir_log_fallback($error);
+        } else {
+            error_log('[Sancus] parallel ophalen mislukt, val terug per call: ' . $message);
+        }
+        return null;
+    }
+
+    if (count($lists) !== count($labels)) {
+        error_log('[Sancus] parallel ophalen gaf te weinig antwoorden, val terug per call');
+        return null;
+    }
+
+    $out = [];
+    foreach ($labels as $index => $label) {
+        $rows = is_array($lists[$index] ?? null) ? $lists[$index] : [];
+        $out[$label] = $rows;
+    }
+
+    return $out;
+}
+
+/**
+ * Eén bundel van hoogstens SANCUS_JOB_FILTER_CHUNK, anders null (dan het bestaande pad).
+ *
+ * @param list<string> $jobNos
+ */
+function project_parallel_job_filter(
+    array $jobNos,
+    string $extraFilter,
+    string $dateField,
+    string $dateFrom,
+    string $dateTo
+): ?string {
+    $chunks = project_job_filter_chunks($jobNos);
+    if (count($chunks) !== 1 || count($chunks[0]) < 2) {
+        return null;
+    }
+    $filter = project_job_chunk_filter($chunks[0], $extraFilter, $dateField, $dateFrom, $dateTo);
+    return $filter === '' ? null : $filter;
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @param list<string> $jobNos
+ * @return list<array<string,mixed>>
+ */
+function project_rows_for_jobs(array $rows, array $jobNos): array
+{
+    $order = project_unique_job_nos($jobNos);
+    $byJob = [];
+    foreach ($order as $jobNo) {
+        $byJob[$jobNo] = [];
+    }
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $job = project_odata_scalar_string($row['Job_No'] ?? null);
+        if ($job === '' || !isset($byJob[$job])) {
+            continue;
+        }
+        $byJob[$job][] = $row;
+    }
+
+    $flat = [];
+    foreach ($order as $jobNo) {
+        foreach ($byJob[$jobNo] as $row) {
+            $flat[] = $row;
+        }
+    }
+
+    return $flat;
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @return list<array<string,mixed>>
+ */
+function project_projects_from_rows(array $rows): array
+{
+    $projects = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $normalized = project_normalize_project_row($row);
+        if ($normalized['no'] !== '') {
+            $projects[] = $normalized;
+        }
+    }
+
+    return $projects;
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @return list<array{no:string,details:string,details_name:string,component_no:string,component_name:string,job_no:string,task_code:string,description:string,start_date:string,status:string}>
+ */
+function project_workorders_from_rows(array $rows): array
+{
+    $workorders = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $normalized = project_normalize_workorder_row($row);
+        if ($normalized['no'] !== '') {
+            $workorders[] = $normalized;
+        }
+    }
+
+    return $workorders;
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ */
+function project_contract_value_from_rows(array $rows): ?float
+{
+    $row = is_array($rows[0] ?? null) ? $rows[0] : null;
+    if ($row === null || !array_key_exists('KVT_Total_Sales_Price', $row)) {
+        return null;
+    }
+
+    return (float) $row['KVT_Total_Sales_Price'];
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @param list<string> $jobNos
+ * @return list<array<string,mixed>>
+ */
+function project_posten_from_raw_rows(array $rows, array $jobNos): array
+{
+    $posten = [];
+    foreach (project_rows_for_jobs($rows, $jobNos) as $row) {
+        $posten[] = project_normalize_posten_row($row);
+    }
+
+    return $posten;
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @return list<array<string,mixed>>
+ */
+function project_planning_lines_from_rows(array $rows): array
+{
+    $lines = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        foreach (project_normalize_planning_row($row) as $line) {
+            $lines[] = $line;
+        }
+    }
+
+    return $lines;
+}
+
 function project_default_companies(): array
 {
     return [
@@ -1487,20 +1691,12 @@ function project_record_contract_search(string $company, string $contractNo, str
         });
 
         $json = json_encode(array_values($entries), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
-        if ($json === false) {
+        if ($json === false || $json === '') {
             error_log('[Sancus] zoekgeschiedenis JSON encode mislukt: ' . json_last_error_msg());
             return;
         }
 
-        $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-        if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
-            error_log('[Sancus] zoekgeschiedenis schrijven mislukt: ' . $tmp);
-            return;
-        }
-        if (!@rename($tmp, $path)) {
-            @unlink($tmp);
-            error_log('[Sancus] zoekgeschiedenis rename mislukt: ' . $path);
-        }
+        sancus_atomic_write($path, $json, 'zoekgeschiedenis');
     } finally {
         flock($lock, LOCK_UN);
         fclose($lock);
@@ -1607,22 +1803,83 @@ function project_fetch_missing_by_nos(string $company, array $jobNos, array $pro
         }
     }
 
+    $missing = [];
     foreach ($jobNos as $jobNo) {
         $jobNo = trim((string) $jobNo);
-        if ($jobNo === '' || isset($have[$jobNo])) {
+        if ($jobNo === '' || isset($have[$jobNo]) || !project_is_bc_code($jobNo)) {
             continue;
         }
+        $missing[] = $jobNo;
+    }
 
-        $fetched = project_fetch_by_no($company, $jobNo, $ttl);
-        if ($fetched === null) {
+    foreach (project_fetch_by_nos($company, $missing, $ttl) as $fetched) {
+        $no = trim((string) ($fetched['no'] ?? ''));
+        if ($no === '' || isset($have[$no])) {
             continue;
         }
-
         $projects[] = $fetched;
-        $have[$jobNo] = true;
+        $have[$no] = true;
     }
 
     return $projects;
+}
+
+/**
+ * Projecten op nummer, in één or-filter per chunk.
+ *
+ * @param list<string> $jobNos
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_by_nos(string $company, array $jobNos, int $ttl = 3600): array
+{
+    $wanted = [];
+    foreach (project_unique_job_nos($jobNos) as $jobNo) {
+        if (project_is_bc_code($jobNo)) {
+            $wanted[] = $jobNo;
+        }
+    }
+    if ($wanted === []) {
+        return [];
+    }
+
+    $found = [];
+    foreach (array_chunk($wanted, max(1, SANCUS_JOB_FILTER_CHUNK)) as $chunk) {
+        if (count($chunk) === 1) {
+            $one = project_fetch_by_no($company, $chunk[0], $ttl);
+            if ($one !== null) {
+                $found[$one['no']] = $one;
+            }
+            continue;
+        }
+
+        $parts = [];
+        foreach ($chunk as $jobNo) {
+            $escaped = project_escape_odata_string($jobNo);
+            if ($escaped !== '') {
+                $parts[] = "No eq '" . $escaped . "'";
+            }
+        }
+        if ($parts === []) {
+            continue;
+        }
+
+        $rows = project_try_fetch_rows($company, 'AppProjecten', [
+            '$select' => SANCUS_PROJECT_SELECT,
+            '$filter' => implode(' or ', $parts),
+        ], $ttl);
+        foreach (project_projects_from_rows($rows) as $project) {
+            $found[$project['no']] = $project;
+        }
+    }
+
+    $ordered = [];
+    foreach ($wanted as $jobNo) {
+        if (isset($found[$jobNo])) {
+            $ordered[] = $found[$jobNo];
+        }
+    }
+
+    return $ordered;
 }
 
 /**
@@ -1771,6 +2028,106 @@ function project_prefetched_projects(?array $prefetch): ?array
 }
 
 /**
+ * Posten, contractplanning en (optioneel) ongeboekte planningsregels.
+ * Bij Mímir lopen die calls naast elkaar; anders het bestaande pad.
+ * Uitgezet door de gebruiker slaat Job_Planning_Lines over. De regels komen
+ * dan niet in het overzicht (zelfde scherm als de voorkeur uit) en nightly
+ * vult de cache alsnog.
+ *
+ * @param list<string> $jobNos
+ * @return array{posten:list<array<string,mixed>>,planning:list<array<string,mixed>>,job_planning:list<array<string,mixed>>}
+ */
+function project_load_contract_sources(
+    string $company,
+    string $contractNo,
+    array $jobNos,
+    string $dateFrom,
+    string $dateTo,
+    int $ttl,
+    bool $includeUnbookedCosts
+): array {
+    $parallelCalls = [];
+    $postenFilter = project_parallel_job_filter($jobNos, '', 'Posting_Date', $dateFrom, $dateTo);
+    if ($postenFilter !== null) {
+        $parallelCalls['posten'] = [
+            'entity' => 'ProjectPosten',
+            'query' => [
+                '$select' => SANCUS_POSTEN_SELECT,
+                '$filter' => $postenFilter,
+                '$orderby' => 'Entry_No asc',
+            ],
+        ];
+    }
+
+    $escapedContract = project_escape_odata_string($contractNo);
+    if ($escapedContract !== '') {
+        $parallelCalls['planning'] = [
+            'entity' => 'ContractPlanningsregels',
+            'query' => [
+                '$select' => SANCUS_PLANNING_SELECT,
+                '$filter' => project_append_date_range_filter(
+                    "Contract_No eq '" . $escapedContract . "'",
+                    'Planned_Invoice_Date',
+                    $dateFrom,
+                    $dateTo
+                ),
+                '$orderby' => 'Line_No asc',
+            ],
+        ];
+    }
+
+    if ($includeUnbookedCosts) {
+        $jobFilter = project_parallel_job_filter(
+            $jobNos,
+            'Qty_to_Transfer_to_Journal ne 0',
+            'Planning_Date',
+            $dateFrom,
+            $dateTo
+        );
+        if ($jobFilter !== null) {
+            $parallelCalls['jobs'] = [
+                'entity' => 'Job_Planning_Lines',
+                'query' => [
+                    '$select' => SANCUS_JOB_PLANNING_SELECT,
+                    '$filter' => $jobFilter,
+                    '$orderby' => 'Line_No asc',
+                ],
+            ];
+        }
+    }
+
+    $parallel = project_fetch_rows_parallel($company, $parallelCalls, $ttl);
+
+    if (is_array($parallel) && isset($parallel['posten'])) {
+        $posten = project_posten_from_raw_rows($parallel['posten'], $jobNos);
+    } else {
+        $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    }
+
+    if (is_array($parallel) && isset($parallel['planning'])) {
+        $planning = project_planning_lines_from_rows($parallel['planning']);
+    } elseif ($escapedContract === '') {
+        $planning = [];
+    } else {
+        $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
+    }
+
+    if (!$includeUnbookedCosts) {
+        $jobPlanning = [];
+    } elseif (is_array($parallel) && isset($parallel['jobs'])) {
+        $jobPlanning = project_rows_for_jobs($parallel['jobs'], $jobNos);
+    } else {
+        $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    }
+
+    return [
+        'posten' => $posten,
+        'planning' => $planning,
+        'job_planning' => $jobPlanning,
+    ];
+}
+
+/**
  * Volledige contract-dataset: projecten, posten (incl. via werkorder-jobs), planning en placeholders.
  *
  * @param array<string,mixed>|null $prefetch projecten/werkorders (en contractwaarde) uit resolve
@@ -1789,7 +2146,8 @@ function project_fetch_contract_overview(
     string $dateFrom = '',
     string $dateTo = '',
     int $ttl = 3600,
-    ?array $prefetch = null
+    ?array $prefetch = null,
+    bool $includeUnbookedCosts = true
 ): array {
     $reused = project_prefetched_projects($prefetch);
     if ($reused !== null) {
@@ -1803,9 +2161,18 @@ function project_fetch_contract_overview(
         $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     }
 
-    $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
-    $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
-    $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $loaded = project_load_contract_sources(
+        $company,
+        $contractNo,
+        $jobNos,
+        $dateFrom,
+        $dateTo,
+        $ttl,
+        $includeUnbookedCosts
+    );
+    $posten = $loaded['posten'];
+    $planning = $loaded['planning'];
+    $jobPlanning = $loaded['job_planning'];
     $unbookedCostLines = project_normalize_unbooked_cost_lines($company, $jobPlanning, $ttl);
     $lines = project_supplement_unbooked_workorders(
         array_merge($posten, $planning, $unbookedCostLines),
@@ -1869,7 +2236,8 @@ function project_fetch_project_overview(
     string $dateFrom = '',
     string $dateTo = '',
     int $ttl = 3600,
-    ?array $prefetch = null
+    ?array $prefetch = null,
+    bool $includeUnbookedCosts = true
 ): array {
     $reused = project_prefetched_projects($prefetch);
     if ($reused !== null) {
@@ -1890,8 +2258,17 @@ function project_fetch_project_overview(
         $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     }
 
-    $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
-    $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $loaded = project_load_contract_sources(
+        $company,
+        '',
+        $jobNos,
+        $dateFrom,
+        $dateTo,
+        $ttl,
+        $includeUnbookedCosts
+    );
+    $posten = $loaded['posten'];
+    $jobPlanning = $loaded['job_planning'];
     $unbookedCostLines = project_normalize_unbooked_cost_lines($company, $jobPlanning, $ttl);
     $lines = project_supplement_unbooked_workorders(
         array_merge($posten, $unbookedCostLines),

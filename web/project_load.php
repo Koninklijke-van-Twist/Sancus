@@ -27,12 +27,67 @@ function project_load_state_path(string $loadId): string
  */
 function project_load_state_read(string $loadId): ?array
 {
+    project_load_state_cleanup();
     $path = project_load_state_path($loadId);
     if (!is_file($path)) {
         return null;
     }
-    $decoded = json_decode((string) @file_get_contents($path), true);
-    return is_array($decoded) ? $decoded : null;
+
+    clearstatcache(true, $path);
+    $size = @filesize($path);
+    if ($size === false || $size === 0) {
+        error_log('[Sancus] resultaatbestand is leeg (0 bytes), opnieuw ophalen: ' . basename($path));
+        @unlink($path);
+        return null;
+    }
+
+    $raw = @file_get_contents($path);
+    if ($raw === false || trim($raw) === '') {
+        error_log('[Sancus] resultaatbestand is leeg (0 bytes), opnieuw ophalen: ' . basename($path));
+        @unlink($path);
+        return null;
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        error_log('[Sancus] resultaatbestand is onleesbaar (' . json_last_error_msg() . '), opnieuw ophalen: ' . basename($path));
+        @unlink($path);
+        return null;
+    }
+
+    $created = (int) ($decoded['created_at'] ?? 0);
+    if ($created > 0 && (time() - $created) > 1800) {
+        @unlink($path);
+        return null;
+    }
+
+    return $decoded;
+}
+
+function project_load_state_cleanup(): void
+{
+    $dir = project_load_state_dir();
+    if (!is_dir($dir)) {
+        return;
+    }
+    $cutoff = time() - 1800;
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return;
+    }
+    foreach ($entries as $entry) {
+        if ($entry === '.' || $entry === '..' || substr($entry, -5) !== '.json') {
+            continue;
+        }
+        $path = $dir . '/' . $entry;
+        if (!is_file($path)) {
+            continue;
+        }
+        $mtime = (int) @filemtime($path);
+        if ($mtime > 0 && $mtime < $cutoff) {
+            @unlink($path);
+        }
+    }
 }
 
 /**
@@ -46,19 +101,17 @@ function project_load_state_write(string $loadId, array $state): void
     }
     $path = project_load_state_path($loadId);
     $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-    if ($json === false) {
+    if ($json === false || $json === '') {
         error_log('[Sancus] load-state JSON encode mislukt: ' . json_last_error_msg());
         throw new RuntimeException('Resultaat opslaan mislukt.');
     }
-
-    $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-    if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
-        error_log('[Sancus] load-state schrijven mislukt: ' . $tmp);
+    $roundTrip = json_decode($json, true);
+    if (!is_array($roundTrip)) {
+        error_log('[Sancus] load-state schrijven overgeslagen: resultaat is niet terug te lezen');
         throw new RuntimeException('Resultaat opslaan mislukt.');
     }
-    if (!@rename($tmp, $path)) {
-        @unlink($tmp);
-        error_log('[Sancus] load-state rename mislukt: ' . $path);
+
+    if (!sancus_atomic_write($path, $json, 'load-state')) {
         throw new RuntimeException('Resultaat opslaan mislukt.');
     }
 }
@@ -126,8 +179,43 @@ function project_load_resolve_one(
         return null;
     }
 
-    $projects = project_fetch_by_contract_no($company, $query, $ttl);
-    $workorders = project_fetch_workorders_for_contract($company, $query, $ttl);
+    $escaped = project_escape_odata_string($query);
+    $parallel = project_fetch_rows_parallel($company, [
+        'projects' => [
+            'entity' => 'AppProjecten',
+            'query' => [
+                '$select' => SANCUS_PROJECT_SELECT,
+                '$filter' => "KVT_Contract_No eq '" . $escaped . "'",
+                '$orderby' => 'No desc',
+            ],
+        ],
+        'workorders' => [
+            'entity' => 'AppWerkorders',
+            'query' => [
+                '$select' => SANCUS_WERKORDER_SELECT,
+                '$filter' => "Contract_No eq '" . $escaped . "'",
+                '$orderby' => 'No asc',
+            ],
+        ],
+        'contract' => [
+            'entity' => 'AppMaintenanceContracts',
+            'query' => [
+                '$select' => SANCUS_CONTRACT_SELECT,
+                '$filter' => "Contract_No eq '" . $escaped . "'",
+                '$top' => '1',
+            ],
+        ],
+    ], $ttl);
+
+    if (is_array($parallel)) {
+        $projects = project_projects_from_rows($parallel['projects'] ?? []);
+        $workorders = project_workorders_from_rows($parallel['workorders'] ?? []);
+        $parallelContractValue = project_contract_value_from_rows($parallel['contract'] ?? []);
+    } else {
+        $projects = project_fetch_by_contract_no($company, $query, $ttl);
+        $workorders = project_fetch_workorders_for_contract($company, $query, $ttl);
+        $parallelContractValue = null;
+    }
     $jobNos = project_collect_job_nos($projects, $workorders);
     $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
 
@@ -168,7 +256,9 @@ function project_load_resolve_one(
         }
         $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     } else {
-        $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
+        $contractValue = is_array($parallel)
+            ? $parallelContractValue
+            : project_fetch_contract_value($company, $contractNo, $ttl);
     }
 
     $customerName = '';
@@ -217,6 +307,9 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $dateFrom = trim((string) ($params['date_from'] ?? ''));
         $dateTo = trim((string) ($params['date_to'] ?? ''));
         $forceRefresh = !empty($params['force_refresh']);
+        $includeUnbooked = array_key_exists('include_unbooked_costs', $params)
+            ? !empty($params['include_unbooked_costs'])
+            : true;
         $ttl = (int) ($params['ttl'] ?? SANCUS_NIGHTLY_CACHE_TTL);
         if ($ttl < 60) {
             $ttl = SANCUS_NIGHTLY_CACHE_TTL;
@@ -274,7 +367,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     $dateFrom,
                     $dateTo,
                     $ttl,
-                    $resolved
+                    $resolved,
+                    $includeUnbooked
                 );
             } else {
                 $overview = project_fetch_contract_overview(
@@ -283,7 +377,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     $dateFrom,
                     $dateTo,
                     $ttl,
-                    $resolved
+                    $resolved,
+                    $includeUnbooked
                 );
             }
 
@@ -292,6 +387,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             $overview['mode'] = (string) ($resolved['mode'] ?? ($overview['mode'] ?? ''));
             $overview['contract_no'] = (string) ($overview['contract_no'] ?? ($resolved['contract_no'] ?? ''));
             $overview['data_cached_at'] = project_get_data_cached_at() ?? time();
+            $overview['include_unbooked_costs'] = $includeUnbooked;
 
             $resultId = 'r_' . bin2hex(random_bytes(12));
             project_load_state_write($resultId, [
@@ -329,6 +425,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'date_to' => $dateTo,
             'ttl' => $ttl,
             'force_refresh' => $forceRefresh,
+            'include_unbooked_costs' => $includeUnbooked,
             'data_cached_at' => project_get_data_cached_at(),
             'projects' => $resolved['projects'] ?? [],
             'workorders' => $resolved['workorders'] ?? [],
@@ -444,7 +541,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'ok' => true,
             'done' => false,
             'load_id' => $loadId,
-            'next' => count($jobNos) > 0 ? 'job_planning' : 'assemble',
+            'next' => (count($jobNos) > 0 && (!array_key_exists('include_unbooked_costs', $state) || !empty($state['include_unbooked_costs']))) ? 'job_planning' : 'assemble',
             'progress' => 55,
             'label' => 'contract_planning',
         ];
@@ -520,6 +617,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'query' => (string) ($state['query'] ?? ''),
             'mode' => (string) ($state['mode'] ?? ''),
             'data_cached_at' => $dataCachedAt,
+            'include_unbooked_costs' => !array_key_exists('include_unbooked_costs', $state)
+                || !empty($state['include_unbooked_costs']),
         ];
 
         $resultId = 'r_' . bin2hex(random_bytes(12));
