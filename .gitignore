@@ -16,7 +16,6 @@ BC Webservices.txt
 
 web/data/user_prefs/
 web/data/contract_searches.json
-web/data/*.lock
 web/data/loads/
 data/user_prefs/
 

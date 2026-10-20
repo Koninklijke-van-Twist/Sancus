@@ -71,7 +71,6 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 3600): arr
     if (is_file($cachePath)) {
 
         consolelog("Found in cache.\n");
-        $inodeBefore = @fileinode($cachePath);
         $cached = read_cache_payload($cachePath, $ttlSeconds);
         if ($cached['valid']) {
             consolelog("Returning data.\n");
@@ -84,11 +83,7 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 3600): arr
 
         if ($cached['delete']) {
             consolelog("Cache expired.\n");
-            clearstatcache(true, $cachePath);
-            $inodeNow = @fileinode($cachePath);
-            if ($inodeBefore !== false && $inodeNow !== false && $inodeNow === $inodeBefore) {
-                @unlink($cachePath);
-            }
+            @unlink($cachePath);
         }
     }
 
@@ -254,18 +249,7 @@ function maybe_cleanup_expired_cache_files(): void
         }
 
         $path = cache_base_dir() . '/' . $entry;
-        if (!is_file($path)) {
-            continue;
-        }
-        $extension = pathinfo($path, PATHINFO_EXTENSION);
-        if ($extension === 'tmp') {
-            $tmpAge = $now - (int) @filemtime($path);
-            if ($tmpAge > 3600) {
-                @unlink($path);
-            }
-            continue;
-        }
-        if ($extension !== 'json') {
+        if (!is_file($path) || pathinfo($path, PATHINFO_EXTENSION) !== 'json') {
             continue;
         }
 
@@ -330,6 +314,7 @@ function cache_path_for_key(string $cacheKey): string
 
 function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = ''): void
 {
+    $tmp = $path . ".tmp";
     $now = time();
     $payload = [
         '_meta' => [
@@ -340,27 +325,14 @@ function write_cache_json(string $path, array $data, int $ttlSeconds, string $so
         'data' => $data,
     ];
 
-    $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+
     if ($json === false) {
-        error_log('[Sancus] cache JSON encode mislukt: ' . json_last_error_msg());
-        return;
+        throw new Exception("Failed to encode cache JSON");
     }
 
-    $dir = dirname($path);
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0777, true);
-    }
-
-    // Eigen tmp-naam: twee requests mogen niet hetzelfde .tmp-bestand hernoemen.
-    $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-    if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
-        error_log('[Sancus] cache schrijven mislukt: ' . $tmp);
-        return;
-    }
-    if (!@rename($tmp, $path)) {
-        @unlink($tmp);
-        error_log('[Sancus] cache rename mislukt naar ' . $path);
-    }
+    file_put_contents($tmp, $json, LOCK_EX);
+    rename($tmp, $path);
 }
 
 function odata_cache_read_payload_meta(string $path): ?array
