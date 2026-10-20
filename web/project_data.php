@@ -289,6 +289,11 @@ function project_try_fetch_rows(string $company, string $entitySet, array $query
     try {
         return project_fetch_rows($company, $entitySet, $query, $ttl);
     } catch (Throwable $error) {
+        $message = $error->getMessage();
+        if (strlen($message) > 500) {
+            $message = substr($message, 0, 500) . '…';
+        }
+        error_log('[Sancus] ' . $entitySet . ' ophalen mislukt: ' . $message);
         return [];
     }
 }
@@ -1424,52 +1429,82 @@ function project_record_contract_search(string $company, string $contractNo, str
         @mkdir($dir, 0750, true);
     }
 
-    $now = time();
-    $cutoff = $now - SANCUS_SEARCH_HISTORY_MAX_AGE;
-    $entries = [];
+    $lockPath = $path . '.lock';
+    $lock = @fopen($lockPath, 'c');
+    if ($lock === false) {
+        error_log('[Sancus] zoekgeschiedenis lock mislukt: ' . $lockPath);
+        return;
+    }
+    try {
+        if (!flock($lock, LOCK_EX)) {
+            error_log('[Sancus] zoekgeschiedenis lock mislukt: ' . $lockPath);
+            return;
+        }
 
-    if (is_file($path)) {
-        $decoded = json_decode((string) @file_get_contents($path), true);
-        if (is_array($decoded)) {
-            foreach ($decoded as $row) {
-                if (!is_array($row)) {
-                    continue;
+        $now = time();
+        $cutoff = $now - SANCUS_SEARCH_HISTORY_MAX_AGE;
+        $entries = [];
+
+        if (is_file($path)) {
+            $rawHistory = (string) @file_get_contents($path);
+            $decoded = json_decode($rawHistory, true);
+            if (!is_array($decoded) && trim($rawHistory) !== '') {
+                error_log('[Sancus] zoekgeschiedenis was ongeldige JSON, begin opnieuw.');
+            }
+            if (is_array($decoded)) {
+                foreach ($decoded as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $rowCompany = trim((string) ($row['company'] ?? ''));
+                    $rowContract = trim((string) ($row['contract'] ?? ''));
+                    $rowAt = (int) ($row['at'] ?? 0);
+                    $rowKind = strtolower(trim((string) ($row['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
+                    if ($rowCompany === '' || $rowContract === '' || $rowAt < $cutoff) {
+                        continue;
+                    }
+                    $key = $rowKind . "\n" . strtolower($rowCompany) . "\n" . strtolower($rowContract);
+                    $entries[$key] = [
+                        'company' => $rowCompany,
+                        'contract' => $rowContract,
+                        'kind' => $rowKind,
+                        'at' => $rowAt,
+                    ];
                 }
-                $rowCompany = trim((string) ($row['company'] ?? ''));
-                $rowContract = trim((string) ($row['contract'] ?? ''));
-                $rowAt = (int) ($row['at'] ?? 0);
-                $rowKind = strtolower(trim((string) ($row['kind'] ?? 'contract'))) === 'project' ? 'project' : 'contract';
-                if ($rowCompany === '' || $rowContract === '' || $rowAt < $cutoff) {
-                    continue;
-                }
-                $key = $rowKind . "\n" . strtolower($rowCompany) . "\n" . strtolower($rowContract);
-                $entries[$key] = [
-                    'company' => $rowCompany,
-                    'contract' => $rowContract,
-                    'kind' => $rowKind,
-                    'at' => $rowAt,
-                ];
             }
         }
+
+        $key = $kind . "\n" . strtolower($company) . "\n" . strtolower($contractNo);
+        $entries[$key] = [
+            'company' => $company,
+            'contract' => $contractNo,
+            'kind' => $kind,
+            'at' => $now,
+        ];
+
+        uasort($entries, static function (array $a, array $b): int {
+            return ((int) ($b['at'] ?? 0)) <=> ((int) ($a['at'] ?? 0));
+        });
+
+        $json = json_encode(array_values($entries), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            error_log('[Sancus] zoekgeschiedenis JSON encode mislukt: ' . json_last_error_msg());
+            return;
+        }
+
+        $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
+        if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+            error_log('[Sancus] zoekgeschiedenis schrijven mislukt: ' . $tmp);
+            return;
+        }
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            error_log('[Sancus] zoekgeschiedenis rename mislukt: ' . $path);
+        }
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
     }
-
-    $key = $kind . "\n" . strtolower($company) . "\n" . strtolower($contractNo);
-    $entries[$key] = [
-        'company' => $company,
-        'contract' => $contractNo,
-        'kind' => $kind,
-        'at' => $now,
-    ];
-
-    uasort($entries, static function (array $a, array $b): int {
-        return ((int) ($b['at'] ?? 0)) <=> ((int) ($a['at'] ?? 0));
-    });
-
-    @file_put_contents(
-        $path,
-        json_encode(array_values($entries), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
-        LOCK_EX
-    );
 }
 
 /**
