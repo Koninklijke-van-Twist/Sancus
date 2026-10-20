@@ -251,6 +251,19 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
         ]);
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $loadStepError) {
+        $loadStepMessage = $loadStepError->getMessage();
+        if (strlen($loadStepMessage) > 500) {
+            $loadStepMessage = substr($loadStepMessage, 0, 500) . '…';
+        }
+        error_log(sprintf(
+            '[Sancus] load_step mislukt company=%s query=%s step=%s: %s in %s:%d',
+            $stepCompany,
+            trim((string) ($_REQUEST['query'] ?? '')),
+            $step,
+            $loadStepMessage,
+            $loadStepError->getFile(),
+            $loadStepError->getLine()
+        ));
         http_response_code(500);
         echo json_encode([
             'ok' => false,
@@ -392,6 +405,11 @@ try {
         $view = 'loading';
     }
 } catch (Throwable $loadError) {
+    $pageLoadMessage = $loadError->getMessage();
+    if (strlen($pageLoadMessage) > 500) {
+        $pageLoadMessage = substr($pageLoadMessage, 0, 500) . '…';
+    }
+    error_log('[Sancus] pagina-load mislukt: ' . $pageLoadMessage . ' in ' . $loadError->getFile() . ':' . $loadError->getLine());
     $errorKey = 'sancus.error.load_failed';
     $view = 'search';
     $asyncLoad = false;

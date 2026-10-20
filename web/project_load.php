@@ -45,7 +45,22 @@ function project_load_state_write(string $loadId, array $state): void
         @mkdir($dir, 0750, true);
     }
     $path = project_load_state_path($loadId);
-    @file_put_contents($path, json_encode($state, JSON_UNESCAPED_UNICODE), LOCK_EX);
+    $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        error_log('[Sancus] load-state JSON encode mislukt: ' . json_last_error_msg());
+        throw new RuntimeException('Resultaat opslaan mislukt.');
+    }
+
+    $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+        error_log('[Sancus] load-state schrijven mislukt: ' . $tmp);
+        throw new RuntimeException('Resultaat opslaan mislukt.');
+    }
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        error_log('[Sancus] load-state rename mislukt: ' . $path);
+        throw new RuntimeException('Resultaat opslaan mislukt.');
+    }
 }
 
 function project_load_state_delete(string $loadId): void
@@ -258,7 +273,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     (string) ($resolved['focus_project'] ?? $query),
                     $dateFrom,
                     $dateTo,
-                    $ttl
+                    $ttl,
+                    $resolved
                 );
             } else {
                 $overview = project_fetch_contract_overview(
@@ -266,7 +282,8 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     (string) ($resolved['contract_no'] ?? $query),
                     $dateFrom,
                     $dateTo,
-                    $ttl
+                    $ttl,
+                    $resolved
                 );
             }
 
