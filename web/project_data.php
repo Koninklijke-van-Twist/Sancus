@@ -24,6 +24,7 @@ const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
 const SANCUS_NIGHTLY_SEARCH_MAX_AGE = 2592000;
 const SANCUS_SEARCH_HISTORY_MAX_AGE = SANCUS_NIGHTLY_SEARCH_MAX_AGE;
 const SANCUS_LOAD_JOB_CHUNK = 2;
+const SANCUS_JOB_FILTER_CHUNK = 40;
 
 /**
  * Functies
@@ -467,7 +468,176 @@ function project_fetch_by_no(string $company, string $projectNo, int $ttl = 3600
     return $normalized['no'] !== '' ? $normalized : null;
 }
 
-function project_fetch_posten(string $company, string $jobNo, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
+/**
+ * Unieke, niet-lege Job_No's in de volgorde van de eerste keer.
+ *
+ * @param list<mixed> $jobNos
+ * @return list<string>
+ */
+function project_unique_job_nos(array $jobNos): array
+{
+    $unique = [];
+    $seen = [];
+    foreach ($jobNos as $jobNo) {
+        $jobNo = trim((string) $jobNo);
+        if ($jobNo === '' || isset($seen[$jobNo])) {
+            continue;
+        }
+        $seen[$jobNo] = true;
+        $unique[] = $jobNo;
+    }
+
+    return $unique;
+}
+
+/**
+ * OData-or op Job_No. Gesorteerd zodat dezelfde set dezelfde cache-key krijgt.
+ *
+ * @param list<string> $jobNos
+ */
+function project_job_no_or_filter(array $jobNos): string
+{
+    $sorted = [];
+    foreach ($jobNos as $jobNo) {
+        $jobNo = trim((string) $jobNo);
+        if ($jobNo !== '') {
+            $sorted[] = $jobNo;
+        }
+    }
+    sort($sorted, SORT_STRING);
+
+    $parts = [];
+    foreach ($sorted as $jobNo) {
+        $escaped = project_escape_odata_string($jobNo);
+        if ($escaped === '') {
+            continue;
+        }
+        $parts[] = "Job_No eq '" . $escaped . "'";
+    }
+    if ($parts === []) {
+        return '';
+    }
+    if (count($parts) === 1) {
+        return $parts[0];
+    }
+
+    return '(' . implode(' or ', $parts) . ')';
+}
+
+/**
+ * @param list<string> $jobNos
+ * @return list<list<string>>
+ */
+function project_job_filter_chunks(array $jobNos): array
+{
+    $sorted = project_unique_job_nos($jobNos);
+    sort($sorted, SORT_STRING);
+    if ($sorted === []) {
+        return [];
+    }
+
+    return array_chunk($sorted, max(1, SANCUS_JOB_FILTER_CHUNK));
+}
+
+/**
+ * Zelfde rijen als per project, maar in or-filters van max SANCUS_JOB_FILTER_CHUNK.
+ * Een mislukte chunk wordt gelogd en per project opnieuw opgehaald.
+ * De uitvoervolgorde volgt de invoer; binnen een project blijft de servicevolgorde staan.
+ *
+ * @param list<string> $jobNos
+ * @param callable(string): list<mixed> $fetchOne
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_rows_for_jobs_batched(
+    string $company,
+    array $jobNos,
+    string $entitySet,
+    string $select,
+    string $orderBy,
+    string $dateField,
+    string $dateFrom,
+    string $dateTo,
+    string $extraFilter,
+    int $ttl,
+    callable $fetchOne
+): array {
+    $order = project_unique_job_nos($jobNos);
+    $byJob = [];
+    foreach ($order as $jobNo) {
+        $byJob[$jobNo] = [];
+    }
+
+    foreach (project_job_filter_chunks($order) as $chunk) {
+        if (count($chunk) < 2) {
+            $jobNo = $chunk[0];
+            foreach ($fetchOne($jobNo) as $row) {
+                if (is_array($row)) {
+                    $byJob[$jobNo][] = $row;
+                }
+            }
+            continue;
+        }
+
+        $jobFilter = project_job_no_or_filter($chunk);
+        $filter = $extraFilter === '' ? $jobFilter : ($jobFilter . ' and ' . $extraFilter);
+        $filter = project_append_date_range_filter($filter, $dateField, $dateFrom, $dateTo);
+
+        try {
+            $rows = project_fetch_rows($company, $entitySet, [
+                '$select' => $select,
+                '$filter' => $filter,
+                '$orderby' => $orderBy,
+            ], $ttl);
+        } catch (Throwable $error) {
+            error_log(sprintf(
+                '[Sancus] %s gebundeld ophalen mislukt (%d projecten), val terug per project: %s',
+                $entitySet,
+                count($chunk),
+                $error->getMessage()
+            ));
+            $rows = null;
+        }
+
+        if ($rows === null) {
+            foreach ($chunk as $jobNo) {
+                foreach ($fetchOne($jobNo) as $row) {
+                    if (is_array($row)) {
+                        $byJob[$jobNo][] = $row;
+                    }
+                }
+            }
+            continue;
+        }
+
+        $inChunk = array_fill_keys($chunk, true);
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $rowJob = trim((string) ($row['Job_No'] ?? ''));
+            if ($rowJob === '' || !isset($inChunk[$rowJob])) {
+                continue;
+            }
+            $byJob[$rowJob][] = $row;
+        }
+    }
+
+    $flat = [];
+    foreach ($order as $jobNo) {
+        foreach ($byJob[$jobNo] as $row) {
+            $flat[] = $row;
+        }
+    }
+
+    return $flat;
+}
+
+/**
+ * Ruwe ProjectPosten voor één project (per-projectpad en terugval).
+ *
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_posten_rows(string $company, string $jobNo, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
 {
     $escaped = project_escape_odata_string($jobNo);
     if ($escaped === '') {
@@ -481,14 +651,17 @@ function project_fetch_posten(string $company, string $jobNo, string $dateFrom =
         $dateTo
     );
 
-    $rows = project_try_fetch_rows($company, 'ProjectPosten', [
+    return project_try_fetch_rows($company, 'ProjectPosten', [
         '$select' => SANCUS_POSTEN_SELECT,
         '$filter' => $filter,
         '$orderby' => 'Entry_No asc',
     ], $ttl);
+}
 
+function project_fetch_posten(string $company, string $jobNo, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
+{
     $posten = [];
-    foreach ($rows as $row) {
+    foreach (project_fetch_posten_rows($company, $jobNo, $dateFrom, $dateTo, $ttl) as $row) {
         if (!is_array($row)) {
             continue;
         }
@@ -506,19 +679,25 @@ function project_fetch_posten(string $company, string $jobNo, string $dateFrom =
  */
 function project_fetch_posten_for_jobs(string $company, array $jobNos, string $dateFrom = '', string $dateTo = '', int $ttl = 3600): array
 {
+    $rows = project_fetch_rows_for_jobs_batched(
+        $company,
+        $jobNos,
+        'ProjectPosten',
+        SANCUS_POSTEN_SELECT,
+        'Entry_No asc',
+        'Posting_Date',
+        $dateFrom,
+        $dateTo,
+        '',
+        $ttl,
+        static function (string $jobNo) use ($company, $dateFrom, $dateTo, $ttl): array {
+            return project_fetch_posten_rows($company, $jobNo, $dateFrom, $dateTo, $ttl);
+        }
+    );
+
     $posten = [];
-    $seen = [];
-
-    foreach ($jobNos as $jobNo) {
-        $jobNo = trim((string) $jobNo);
-        if ($jobNo === '' || isset($seen[$jobNo])) {
-            continue;
-        }
-        $seen[$jobNo] = true;
-
-        foreach (project_fetch_posten($company, $jobNo, $dateFrom, $dateTo, $ttl) as $line) {
-            $posten[] = $line;
-        }
+    foreach ($rows as $row) {
+        $posten[] = project_normalize_posten_row($row);
     }
 
     return $posten;
@@ -690,6 +869,46 @@ function project_fetch_item_costing_methods(string $company, array $itemNos, int
  * @param list<string> $jobNos
  * @return list<array<string,mixed>>
  */
+/**
+ * Ruwe Job_Planning_Lines voor één project (per-projectpad en terugval).
+ *
+ * @return list<array<string,mixed>>
+ */
+function project_fetch_job_planning_rows_for_job(
+    string $company,
+    string $jobNo,
+    string $dateFrom = '',
+    string $dateTo = '',
+    int $ttl = 3600
+): array {
+    $escaped = project_escape_odata_string($jobNo);
+    if ($escaped === '') {
+        return [];
+    }
+
+    $filter = project_append_date_range_filter(
+        "Job_No eq '" . $escaped . "' and Qty_to_Transfer_to_Journal ne 0",
+        'Planning_Date',
+        $dateFrom,
+        $dateTo
+    );
+
+    $rows = project_try_fetch_rows($company, 'Job_Planning_Lines', [
+        '$select' => SANCUS_JOB_PLANNING_SELECT,
+        '$filter' => $filter,
+        '$orderby' => 'Line_No asc',
+    ], $ttl);
+
+    $lines = [];
+    foreach ($rows as $row) {
+        if (is_array($row)) {
+            $lines[] = $row;
+        }
+    }
+
+    return $lines;
+}
+
 function project_fetch_job_planning_for_jobs(
     string $company,
     array $jobNos,
@@ -697,42 +916,21 @@ function project_fetch_job_planning_for_jobs(
     string $dateTo = '',
     int $ttl = 3600
 ): array {
-    $lines = [];
-    $seen = [];
-
-    foreach ($jobNos as $jobNo) {
-        $jobNo = trim((string) $jobNo);
-        if ($jobNo === '' || isset($seen[$jobNo])) {
-            continue;
+    return project_fetch_rows_for_jobs_batched(
+        $company,
+        $jobNos,
+        'Job_Planning_Lines',
+        SANCUS_JOB_PLANNING_SELECT,
+        'Line_No asc',
+        'Planning_Date',
+        $dateFrom,
+        $dateTo,
+        'Qty_to_Transfer_to_Journal ne 0',
+        $ttl,
+        static function (string $jobNo) use ($company, $dateFrom, $dateTo, $ttl): array {
+            return project_fetch_job_planning_rows_for_job($company, $jobNo, $dateFrom, $dateTo, $ttl);
         }
-        $seen[$jobNo] = true;
-
-        $escaped = project_escape_odata_string($jobNo);
-        if ($escaped === '') {
-            continue;
-        }
-
-        $filter = project_append_date_range_filter(
-            "Job_No eq '" . $escaped . "' and Qty_to_Transfer_to_Journal ne 0",
-            'Planning_Date',
-            $dateFrom,
-            $dateTo
-        );
-
-        $rows = project_try_fetch_rows($company, 'Job_Planning_Lines', [
-            '$select' => SANCUS_JOB_PLANNING_SELECT,
-            '$filter' => $filter,
-            '$orderby' => 'Line_No asc',
-        ], $ttl);
-
-        foreach ($rows as $row) {
-            if (is_array($row)) {
-                $lines[] = $row;
-            }
-        }
-    }
-
-    return $lines;
+    );
 }
 
 /**
@@ -1443,8 +1641,27 @@ function project_enrich_details_names(string $company, array $lines, int $ttl = 
 }
 
 /**
+ * Al opgehaalde projecten en werkorders (resolve), anders null.
+ *
+ * @param array<string,mixed>|null $prefetch
+ * @return array{projects:list<array<string,mixed>>,workorders:list<array<string,mixed>>}|null
+ */
+function project_prefetched_projects(?array $prefetch): ?array
+{
+    if ($prefetch === null || !is_array($prefetch['projects'] ?? null) || !is_array($prefetch['workorders'] ?? null)) {
+        return null;
+    }
+
+    return [
+        'projects' => $prefetch['projects'],
+        'workorders' => $prefetch['workorders'],
+    ];
+}
+
+/**
  * Volledige contract-dataset: projecten, posten (incl. via werkorder-jobs), planning en placeholders.
  *
+ * @param array<string,mixed>|null $prefetch projecten/werkorders (en contractwaarde) uit resolve
  * @return array{
  *   projects:list<array<string,mixed>>,
  *   lines:list<array<string,mixed>>,
@@ -1459,12 +1676,20 @@ function project_fetch_contract_overview(
     string $contractNo,
     string $dateFrom = '',
     string $dateTo = '',
-    int $ttl = 3600
+    int $ttl = 3600,
+    ?array $prefetch = null
 ): array {
-    $projects = project_fetch_by_contract_no($company, $contractNo, $ttl);
-    $workorders = project_fetch_workorders_for_contract($company, $contractNo, $ttl);
-    $jobNos = project_collect_job_nos($projects, $workorders);
-    $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
+    $reused = project_prefetched_projects($prefetch);
+    if ($reused !== null) {
+        $projects = $reused['projects'];
+        $workorders = $reused['workorders'];
+        $jobNos = project_collect_job_nos($projects, $workorders);
+    } else {
+        $projects = project_fetch_by_contract_no($company, $contractNo, $ttl);
+        $workorders = project_fetch_workorders_for_contract($company, $contractNo, $ttl);
+        $jobNos = project_collect_job_nos($projects, $workorders);
+        $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
+    }
 
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
@@ -1477,7 +1702,12 @@ function project_fetch_contract_overview(
     $lines = project_enrich_workorder_start_dates($lines, $workorders);
     $lines = project_enrich_project_status($lines, $projects);
     $lines = project_enrich_details_names($company, $lines, $ttl);
-    $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
+    if (is_array($prefetch) && array_key_exists('contract_value', $prefetch)) {
+        $rawValue = $prefetch['contract_value'];
+        $contractValue = $rawValue === null ? null : (float) $rawValue;
+    } else {
+        $contractValue = project_fetch_contract_value($company, $contractNo, $ttl);
+    }
 
     $customerName = '';
     $customerNo = '';
@@ -1510,6 +1740,7 @@ function project_fetch_contract_overview(
 /**
  * Overzicht voor één project zonder (geldig) contract.
  *
+ * @param array<string,mixed>|null $prefetch projecten/werkorders uit resolve
  * @return array{
  *   projects:list<array<string,mixed>>,
  *   lines:list<array<string,mixed>>,
@@ -1525,16 +1756,27 @@ function project_fetch_project_overview(
     string $projectNo,
     string $dateFrom = '',
     string $dateTo = '',
-    int $ttl = 3600
+    int $ttl = 3600,
+    ?array $prefetch = null
 ): array {
-    $project = project_fetch_by_no($company, $projectNo, $ttl);
-    $projects = $project !== null ? [$project] : [];
-    $workorders = project_fetch_workorders_for_job($company, $projectNo, $ttl);
-    $jobNos = project_collect_job_nos($projects, $workorders);
-    if ($jobNos === [] && $projectNo !== '') {
-        $jobNos = [$projectNo];
+    $reused = project_prefetched_projects($prefetch);
+    if ($reused !== null) {
+        $projects = $reused['projects'];
+        $workorders = $reused['workorders'];
+        $jobNos = project_collect_job_nos($projects, $workorders);
+        if ($jobNos === [] && trim($projectNo) !== '') {
+            $jobNos = [trim($projectNo)];
+        }
+    } else {
+        $project = project_fetch_by_no($company, $projectNo, $ttl);
+        $projects = $project !== null ? [$project] : [];
+        $workorders = project_fetch_workorders_for_job($company, $projectNo, $ttl);
+        $jobNos = project_collect_job_nos($projects, $workorders);
+        if ($jobNos === [] && $projectNo !== '') {
+            $jobNos = [$projectNo];
+        }
+        $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     }
-    $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
 
     $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
     $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
