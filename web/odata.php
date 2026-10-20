@@ -406,6 +406,10 @@ function sancus_unlink_if_same_file(string $path, $inodeBefore, int $sizeBefore)
 /**
  * Schrijf bytes via een eigen tijdelijk bestand en rename.
  * Een lege of onvolledige write wordt niet gepubliceerd.
+ *
+ * Niet $path.'.tmp': file_put_contents truncatet dat gedeelde bestand vóór
+ * flock, en rename zet de 0 bytes dan over de cache. Dat gaf bij een reload
+ * een leeg cachebestand (ook vóór #11). Elke schrijver krijgt daarom een eigen naam.
  */
 function sancus_atomic_write(string $path, string $contents, string $context): bool
 {
@@ -421,22 +425,32 @@ function sancus_atomic_write(string $path, string $contents, string $context): b
     }
 
     $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
-    $fh = @fopen($tmp, 'wb');
+    $fh = @fopen($tmp, 'xb');
     if ($fh === false) {
         error_log('[Sancus] ' . $context . ' schrijven mislukt: ' . $tmp);
         return false;
     }
 
-    $written = @fwrite($fh, $contents);
+    $written = 0;
+    $expected = strlen($contents);
+    $offset = 0;
+    while ($offset < $expected) {
+        $chunk = @fwrite($fh, substr($contents, $offset));
+        if ($chunk === false || $chunk === 0) {
+            break;
+        }
+        $written += $chunk;
+        $offset += $chunk;
+    }
     @fflush($fh);
     if (function_exists('fsync')) {
         @fsync($fh);
     }
     @fclose($fh);
 
-    $expected = strlen($contents);
     clearstatcache(true, $tmp);
     $size = @filesize($tmp);
+    $tmpInode = @fileinode($tmp);
     if ($written !== $expected || $size !== $expected || $size === 0) {
         @unlink($tmp);
         error_log('[Sancus] ' . $context . ' onvolledig geschreven (' . (int) $written . '/' . $expected . '): ' . basename($path));
@@ -450,9 +464,11 @@ function sancus_atomic_write(string $path, string $contents, string $context): b
     }
 
     clearstatcache(true, $path);
+    $finalInode = @fileinode($path);
     $finalSize = @filesize($path);
-    if ($finalSize === false || $finalSize === 0) {
-        @unlink($path);
+    // Alleen ons eigen lege bestand weghalen. Een nieuwere rename mag blijven staan.
+    if ($tmpInode !== false && $finalInode === $tmpInode && ($finalSize === false || (int) $finalSize === 0)) {
+        sancus_unlink_if_same_file($path, $tmpInode, 0);
         error_log('[Sancus] ' . $context . ' eindbestand is leeg (0 bytes), verwijderd: ' . basename($path));
         return false;
     }
@@ -556,23 +572,25 @@ function odata_cache_status_payload(): array
                 continue;
             }
 
-            $sizeBytes = (int) $fileInfo->getSize();
-            if ($sizeBytes === 0) {
+            clearstatcache(true, $path);
+            $inodeBefore = @fileinode($path);
+            $sizeBytes = @filesize($path);
+            if ($sizeBytes === false || $sizeBytes === 0) {
                 error_log('[Sancus] cachebestand is leeg (0 bytes), verwijderd: ' . $filename);
-                @unlink($path);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
                 continue;
             }
 
             $rawCache = @file_get_contents($path);
             if ($rawCache === false || trim($rawCache) === '') {
                 error_log('[Sancus] cachebestand is leeg (0 bytes), verwijderd: ' . $filename);
-                @unlink($path);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
                 continue;
             }
             json_decode($rawCache, true);
             if (json_last_error() !== JSON_ERROR_NONE) {
                 error_log('[Sancus] cachebestand is onleesbaar (' . json_last_error_msg() . '), verwijderd: ' . $filename);
-                @unlink($path);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
                 continue;
             }
 

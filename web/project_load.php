@@ -34,24 +34,25 @@ function project_load_state_read(string $loadId): ?array
     }
 
     clearstatcache(true, $path);
+    $inodeBefore = @fileinode($path);
     $size = @filesize($path);
     if ($size === false || $size === 0) {
         error_log('[Sancus] resultaatbestand is leeg (0 bytes), opnieuw ophalen: ' . basename($path));
-        @unlink($path);
+        sancus_unlink_if_same_file($path, $inodeBefore, (int) $size);
         return null;
     }
 
     $raw = @file_get_contents($path);
     if ($raw === false || trim($raw) === '') {
         error_log('[Sancus] resultaatbestand is leeg (0 bytes), opnieuw ophalen: ' . basename($path));
-        @unlink($path);
+        sancus_unlink_if_same_file($path, $inodeBefore, (int) $size);
         return null;
     }
 
     $decoded = json_decode($raw, true);
     if (!is_array($decoded)) {
         error_log('[Sancus] resultaatbestand is onleesbaar (' . json_last_error_msg() . '), opnieuw ophalen: ' . basename($path));
-        @unlink($path);
+        sancus_unlink_if_same_file($path, $inodeBefore, (int) $size);
         return null;
     }
 

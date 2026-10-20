@@ -1,7 +1,8 @@
 <?php
 /**
- * Gelijktijdige requests mogen geen half cachebestand achterlaten,
- * en een mislukte OData-call moet de oorzaak in de log zetten.
+ * Gelijktijdige requests mogen geen half cachebestand achterlaten.
+ * Vóór #11 deelde elke cache-write hetzelfde pad.tmp; een tweede
+ * file_put_contents zette dat op 0 bytes en rename publiceerde die leegte.
  * Run: php tests/cache_race_test.php
  */
 
@@ -130,7 +131,85 @@ test_assert(
     $fetchLog
 );
 
-foreach ([$path, $sharedTmp, $partial, $utf8Path] as $file) {
+$racePath = $dir . '/parallel.json';
+$raceLoadId = 'r_parallel_' . bin2hex(random_bytes(4));
+$workers = 6;
+$rounds = 25;
+$workerFails = 0;
+if (!function_exists('pcntl_fork')) {
+    test_assert('pcntl_fork beschikbaar', false);
+} else {
+    $pids = [];
+    for ($worker = 0; $worker < $workers; $worker++) {
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $workerFails++;
+            continue;
+        }
+        if ($pid === 0) {
+            for ($round = 0; $round < $rounds; $round++) {
+                $marker = 'w' . $worker . 'r' . $round;
+                write_cache_json($racePath, [[
+                    'Job_No' => 'PRJ2606361',
+                    'marker' => $marker,
+                    'pad' => str_repeat('x', 12000),
+                ]], 60, 'https://bc.example/ProjectPosten');
+                clearstatcache(true, $racePath);
+                if (!is_file($racePath)) {
+                    continue;
+                }
+                $rawRace = @file_get_contents($racePath);
+                $sizeRace = @filesize($racePath);
+                if ($rawRace === false || $rawRace === '' || $sizeRace === 0) {
+                    exit(2);
+                }
+                $decodedRace = json_decode($rawRace, true);
+                if (!is_array($decodedRace) || !is_array($decodedRace['data'] ?? null)) {
+                    exit(3);
+                }
+                project_load_state_write($raceLoadId, [
+                    'kind' => 'result',
+                    'created_at' => time(),
+                    'overview' => [
+                        'projects' => [['no' => 'PRJ2606361']],
+                        'lines' => [],
+                        'marker' => $marker,
+                    ],
+                ]);
+                $storedRace = project_load_state_read($raceLoadId);
+                if (!is_array($storedRace['overview']['projects'] ?? null)) {
+                    exit(4);
+                }
+            }
+            exit(0);
+        }
+        $pids[] = $pid;
+    }
+    foreach ($pids as $pid) {
+        $status = 0;
+        pcntl_waitpid($pid, $status);
+        $code = pcntl_wifexited($status) ? pcntl_wexitstatus($status) : 1;
+        if ($code !== 0) {
+            $workerFails++;
+        }
+    }
+}
+$raceRead = is_file($racePath) ? read_cache_payload($racePath, 60) : ['valid' => false];
+test_assert(
+    'parallelle writes laten geen lege of halve cache achter',
+    $workerFails === 0 && ($raceRead['valid'] ?? false) === true && ($raceRead['data'][0]['Job_No'] ?? '') === 'PRJ2606361',
+    'fails=' . $workerFails
+);
+$raceState = project_load_state_read($raceLoadId);
+test_assert(
+    'parallelle resultaat-writes blijven leesbaar',
+    is_array($raceState['overview']['projects'] ?? null)
+);
+$raceTmp = array_merge(glob($racePath . '.*.tmp') ?: [], glob(project_load_state_path($raceLoadId) . '.*.tmp') ?: []);
+test_assert('geen achtergebleven parallel-tmp', $raceTmp === []);
+project_load_state_delete($raceLoadId);
+
+foreach ([$path, $sharedTmp, $partial, $utf8Path, $racePath] as $file) {
     @unlink($file);
 }
 @rmdir($dir);
