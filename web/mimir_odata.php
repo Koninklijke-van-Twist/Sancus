@@ -111,7 +111,8 @@ function odata_mimir_is_failure(Throwable $exception): bool
     return (strpos($message, 'Mímir cURL error:') === 0)
         || (strpos($message, 'Mímir HTTP ') === 0)
         || (strpos($message, 'Mímir gaf ongeldige JSON') === 0)
-        || (strpos($message, 'Mímir error:') === 0);
+        || (strpos($message, 'Mímir error:') === 0)
+        || (strpos($message, 'Mímir nextLink') === 0);
 }
 
 function odata_auth_is_usable($auth): bool
@@ -803,9 +804,10 @@ function odata_mimir_query_impl(string $company, string $table, array $odataQuer
 }
 
 /**
- * Volg @odata.nextLink op dezelfde Mímir-host. Een kring of een vreemde host
- * stopt de reeks; de chunk valt dan terug per project in plaats van eindeloos
- * door te lezen of stilletjes pagina's weg te gooien.
+ * Volg @odata.nextLink. Een BC-adres of een relatief pad wordt op de Mímir-host
+ * gezet; de API-sleutel gaat niet naar een andere host. Een kring of een
+ * mislukte pagina gooit een Mímir-fout, zodat de caller op directe BC terugvalt
+ * in plaats van de pagina's stilzwijgend weg te gooien.
  *
  * @param array<string, mixed> $response
  * @return list<array<string, mixed>>
@@ -1071,10 +1073,74 @@ function odata_mimir_curl_many(array $specs): array
 }
 
 /**
+ * Zet een BC- of relatieve @odata.nextLink op de Mímir-host.
+ * Pad en query blijven gelijk; alleen origin (en het Mímir-pad) veranderen.
+ */
+function odata_mimir_rewrite_next_link(string $url): string
+{
+    $url = trim($url);
+    if ($url === '') {
+        throw new Exception('Mímir nextLink is leeg.');
+    }
+    if (odata_mimir_link_on_mimir_host($url)) {
+        return $url;
+    }
+
+    $base = odata_mimir_base_url();
+    $baseParts = parse_url($base);
+    if (!is_array($baseParts) || trim((string) ($baseParts['host'] ?? '')) === '') {
+        throw new Exception('Mímir nextLink wijst niet naar de Mímir-host.');
+    }
+
+    $scheme = strtolower((string) ($baseParts['scheme'] ?? 'https'));
+    $origin = $scheme . '://' . $baseParts['host'];
+    if (isset($baseParts['port'])) {
+        $defaultPort = $scheme === 'https' ? 443 : 80;
+        if ((int) $baseParts['port'] !== $defaultPort) {
+            $origin .= ':' . (int) $baseParts['port'];
+        }
+    }
+    $basePath = rtrim((string) ($baseParts['path'] ?? ''), '/');
+
+    $pathAndQuery = $url;
+    $absolute = preg_match('#^[a-z][a-z0-9+.-]*://#i', $url) === 1 || str_starts_with($url, '//');
+    if ($absolute) {
+        $withScheme = str_starts_with($url, '//') ? ($scheme . ':' . $url) : $url;
+        $parts = parse_url($withScheme);
+        $linkScheme = strtolower((string) (is_array($parts) ? ($parts['scheme'] ?? '') : ''));
+        if (!is_array($parts) || ($linkScheme !== 'http' && $linkScheme !== 'https')) {
+            throw new Exception('Mímir nextLink wijst niet naar de Mímir-host.');
+        }
+        $path = (string) ($parts['path'] ?? '');
+        if ($path === '' || $path[0] !== '/') {
+            throw new Exception('Mímir nextLink wijst niet naar de Mímir-host.');
+        }
+        $pathAndQuery = $path;
+        if (isset($parts['query']) && $parts['query'] !== '') {
+            $pathAndQuery .= '?' . $parts['query'];
+        }
+    }
+
+    if (str_starts_with($pathAndQuery, '?')) {
+        return $base . $pathAndQuery;
+    }
+    if (str_starts_with($pathAndQuery, '/')) {
+        if ($basePath !== '' && ($pathAndQuery === $basePath || str_starts_with($pathAndQuery, $basePath . '/'))) {
+            return $origin . $pathAndQuery;
+        }
+
+        return $origin . $basePath . $pathAndQuery;
+    }
+
+    return $base . '/' . $pathAndQuery;
+}
+
+/**
  * @return array<string, mixed>
  */
 function odata_mimir_fetch_next_link(string $url): array
 {
+    $url = odata_mimir_rewrite_next_link($url);
     if (!odata_mimir_link_on_mimir_host($url)) {
         throw new Exception('Mímir nextLink wijst niet naar de Mímir-host.');
     }
