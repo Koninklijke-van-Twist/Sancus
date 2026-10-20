@@ -258,8 +258,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     (string) ($resolved['focus_project'] ?? $query),
                     $dateFrom,
                     $dateTo,
-                    $ttl,
-                    $resolved
+                    $ttl
                 );
             } else {
                 $overview = project_fetch_contract_overview(
@@ -267,8 +266,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                     (string) ($resolved['contract_no'] ?? $query),
                     $dateFrom,
                     $dateTo,
-                    $ttl,
-                    $resolved
+                    $ttl
                 );
             }
 
