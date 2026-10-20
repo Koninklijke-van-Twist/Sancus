@@ -821,115 +821,12 @@ function odata_mimir_query_impl(string $company, string $table, array $odataQuer
     }
 
     $response = odata_mimir_request('POST', 'query.php', $body);
-    return odata_mimir_collect_paged_value($response);
-}
-
-/**
- * Volg @odata.nextLink op dezelfde Mímir-host. Een kring of een vreemde host
- * stopt de reeks; de chunk valt dan terug per project in plaats van eindeloos
- * door te lezen of stilletjes pagina's weg te gooien.
- *
- * @param array<string, mixed> $response
- * @return list<array<string, mixed>>
- */
-function odata_mimir_collect_paged_value(array $response): array
-{
-    $rows = [];
-    $seen = [];
-    $pages = 0;
-    while (true) {
-        if (!isset($response['value']) || !is_array($response['value'])) {
-            throw new Exception("Mímir query-antwoord mist 'value'.");
-        }
-        foreach ($response['value'] as $row) {
-            if (is_array($row)) {
-                $rows[] = $row;
-            }
-        }
-        $next = $response['@odata.nextLink'] ?? null;
-        if (!is_string($next) || trim($next) === '') {
-            break;
-        }
-        $next = trim($next);
-        if (isset($seen[$next])) {
-            break;
-        }
-        if ($pages >= 40) {
-            throw new Exception('Mímir nextLink heeft te veel pagina\'s.');
-        }
-        $seen[$next] = true;
-        $pages++;
-        $response = odata_mimir_fetch_next_link($next);
+    if (!isset($response['value']) || !is_array($response['value'])) {
+        throw new Exception("Mímir query-antwoord mist 'value'.");
     }
-
-    return $rows;
-}
-
-/**
- * @return array<string, mixed>
- */
-function odata_mimir_fetch_next_link(string $url): array
-{
-    if (!odata_mimir_link_on_mimir_host($url)) {
-        throw new Exception('Mímir nextLink wijst niet naar de Mímir-host.');
-    }
-
-    $apiKey = odata_mimir_api_key();
-    if ($apiKey === '') {
-        throw new Exception('Mímir API-sleutel ontbreekt ($mimirApi).');
-    }
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => odata_mimir_connect_timeout_seconds(),
-        CURLOPT_TIMEOUT => odata_mimir_timeout_seconds(),
-        CURLOPT_HTTPGET => true,
-        CURLOPT_HTTPHEADER => [
-            'Accept: application/json',
-            'Authorization: Bearer ' . $apiKey,
-            'X-API-Key: ' . $apiKey,
-        ],
-        CURLOPT_USERAGENT => 'Sancus-MimirClient/1.0',
-    ]);
-    $raw = curl_exec($ch);
-    if ($raw === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new Exception('Mímir nextLink cURL error: ' . $err);
-    }
-    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    if ($code < 200 || $code >= 300) {
-        throw new Exception('Mímir nextLink HTTP ' . $code);
-    }
-    $decoded = json_decode($raw, true);
-    if (!is_array($decoded)) {
-        throw new Exception('Mímir nextLink gaf ongeldige JSON terug.');
-    }
-
-    return $decoded;
-}
-
-function odata_mimir_link_on_mimir_host(string $url): bool
-{
-    $base = parse_url(odata_mimir_base_url());
-    $parts = parse_url($url);
-    if (!is_array($base) || !is_array($parts)) {
-        return false;
-    }
-    $baseHost = strtolower((string) ($base['host'] ?? ''));
-    $host = strtolower((string) ($parts['host'] ?? ''));
-    if ($baseHost === '' || $host !== $baseHost) {
-        return false;
-    }
-    $baseScheme = strtolower((string) ($base['scheme'] ?? 'https'));
-    $scheme = strtolower((string) ($parts['scheme'] ?? $baseScheme));
-    $basePort = (int) ($base['port'] ?? ($baseScheme === 'https' ? 443 : 80));
-    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
-
-    return $port === $basePort;
+    /** @var list<array<string, mixed>> $value */
+    $value = $response['value'];
+    return $value;
 }
 
 /**
