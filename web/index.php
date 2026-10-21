@@ -280,10 +280,20 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'salesperson_suggest') {
         auth_set_current_company_context($suggestCompany);
         $suggestMatches = [];
         $suggestLen = function_exists('mb_strlen') ? mb_strlen($suggestQuery) : strlen($suggestQuery);
+        $suggestCustomers = [];
         if ($suggestLen >= 2 && !project_query_is_contract_or_project_number($suggestQuery)) {
             $suggestMatches = project_find_salespersons($suggestCompany, $suggestQuery, SANCUS_NIGHTLY_CACHE_TTL, 8);
+            try {
+                $suggestCustomers = project_find_customers($suggestCompany, $suggestQuery, SANCUS_NIGHTLY_CACHE_TTL, 8);
+            } catch (Throwable $customerSuggestError) {
+                $customerSuggestMessage = $customerSuggestError->getMessage();
+                if (strlen($customerSuggestMessage) > 500) {
+                    $customerSuggestMessage = substr($customerSuggestMessage, 0, 500) . '…';
+                }
+                error_log('[Sancus] klant-suggestie mislukt: ' . $customerSuggestMessage);
+            }
         }
-        echo json_encode(['ok' => true, 'matches' => $suggestMatches], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        echo json_encode(['ok' => true, 'matches' => $suggestMatches, 'customers' => $suggestCustomers], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $suggestError) {
         $suggestMessage = $suggestError->getMessage();
         if (strlen($suggestMessage) > 500) {
@@ -1639,6 +1649,40 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 return;
             }
 
+            if (data.redirect_customer && data.redirect_customer.no) {
+                var customerParams = pageParams();
+                customerParams.set('customer', data.redirect_customer.no);
+                window.location.href = 'customer.php?' + customerParams.toString();
+                return;
+            }
+
+            if (data.customer_matches && data.customer_matches.length) {
+                var customerList = document.createElement('ul');
+                customerList.className = 'sancus-choose-list';
+                data.customer_matches.forEach(function (match) {
+                    var item = document.createElement('li');
+                    item.className = 'sancus-list-item';
+                    var link = document.createElement('a');
+                    link.className = 'contract-nav';
+                    var choiceParams = pageParams();
+                    choiceParams.set('customer', match.no || '');
+                    link.href = 'customer.php?' + choiceParams.toString();
+                    var label = match.name || match.no || '';
+                    if (match.name && match.no) {
+                        label += ' (' + match.no + ')';
+                    }
+                    link.textContent = label;
+                    item.appendChild(link);
+                    customerList.appendChild(item);
+                });
+                panel.innerHTML = '';
+                var customerHeading = document.createElement('h2');
+                customerHeading.textContent = <?= json_encode(LOC('sancus.customer.choose'), JSON_UNESCAPED_UNICODE) ?>;
+                panel.appendChild(customerHeading);
+                panel.appendChild(customerList);
+                return;
+            }
+
             if (data.redirect && data.redirect.contract) {
                 var redirectParams = pageParams();
                 redirectParams.set('contract', data.redirect.contract);
@@ -1736,6 +1780,8 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
     var timer = null;
     var controller = null;
     var active = -1;
+    var salespersonKind = <?= json_encode(LOC('sancus.salesperson.title'), JSON_UNESCAPED_UNICODE) ?>;
+    var customerKind = <?= json_encode(LOC('sancus.meta.customer'), JSON_UNESCAPED_UNICODE) ?>;
 
     function hide() {
         list.hidden = true;
@@ -1769,31 +1815,73 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         }
     }
 
-    function render(matches) {
+    function chooseCustomer(no) {
+        if (!no) {
+            return;
+        }
+        hide();
+        var params = new URLSearchParams();
+        params.set('company', company ? company.value : '');
+        params.set('customer', no);
+        var langInput = input.form ? input.form.querySelector('input[name="lang"]') : null;
+        params.set('lang', langInput && langInput.value ? langInput.value : 'nl');
+        var dateFrom = input.form ? input.form.querySelector('input[name="date_from"]') : null;
+        if (dateFrom && dateFrom.value) {
+            params.set('date_from', dateFrom.value);
+        }
+        var loader = document.getElementById('sancus-loader');
+        if (loader) {
+            loader.classList.add('is-visible');
+            loader.setAttribute('aria-hidden', 'false');
+            loader.setAttribute('aria-busy', 'true');
+        }
+        window.location.href = 'customer.php?' + params.toString();
+    }
+
+    function addSuggestButton(label, codeLine, onClick) {
+        var item = document.createElement('li');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        if (codeLine) {
+            var code = document.createElement('span');
+            code.className = 'sancus-suggest-code';
+            code.textContent = codeLine;
+            button.appendChild(code);
+        }
+        button.addEventListener('mousedown', function (event) {
+            event.preventDefault();
+        });
+        button.addEventListener('click', onClick);
+        item.appendChild(button);
+        list.appendChild(item);
+    }
+
+    function render(data) {
         list.innerHTML = '';
-        if (!matches || !matches.length) {
+        var matches = (data && data.matches) || [];
+        var customers = (data && data.customers) || [];
+        if (!matches.length && !customers.length) {
             hide();
             return;
         }
         matches.forEach(function (match) {
-            var item = document.createElement('li');
-            var button = document.createElement('button');
-            button.type = 'button';
-            button.textContent = match.name || match.code || '';
+            var line = salespersonKind;
             if (match.code) {
-                var code = document.createElement('span');
-                code.className = 'sancus-suggest-code';
-                code.textContent = match.code;
-                button.appendChild(code);
+                line += ' · ' + match.code;
             }
-            button.addEventListener('mousedown', function (event) {
-                event.preventDefault();
-            });
-            button.addEventListener('click', function () {
+            addSuggestButton(match.name || match.code || '', line, function () {
                 choose(match.code || '');
             });
-            item.appendChild(button);
-            list.appendChild(item);
+        });
+        customers.forEach(function (customer) {
+            var line = customerKind;
+            if (customer.no) {
+                line += ' · ' + customer.no;
+            }
+            addSuggestButton(customer.name || customer.no || '', line, function () {
+                chooseCustomer(customer.no || '');
+            });
         });
         list.hidden = false;
         active = -1;
@@ -1826,7 +1914,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             if (input.value.trim() !== query) {
                 return;
             }
-            render((data && data.matches) || []);
+            render(data || {});
         }).catch(function () {});
     }
 

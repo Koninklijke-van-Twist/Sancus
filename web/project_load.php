@@ -345,6 +345,29 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
                 ];
             }
 
+            $customers = project_find_customers($company, $query, $ttl, 20);
+            if (count($customers) === 1) {
+                return [
+                    'ok' => true,
+                    'done' => true,
+                    'redirect_customer' => [
+                        'no' => $customers[0]['no'],
+                        'name' => $customers[0]['name'],
+                    ],
+                    'progress' => 100,
+                    'label' => 'redirect',
+                ];
+            }
+            if (count($customers) > 1) {
+                return [
+                    'ok' => true,
+                    'done' => true,
+                    'customer_matches' => $customers,
+                    'progress' => 100,
+                    'label' => 'customer_choose',
+                ];
+            }
+
             return [
                 'ok' => false,
                 'done' => true,
