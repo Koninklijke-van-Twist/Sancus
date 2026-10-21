@@ -341,7 +341,18 @@ try {
                 $view = 'search';
             } else {
                 $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
-                $headerMetrics = project_header_metrics($projects, $lines);
+                if ($forceRefresh) {
+                    project_set_force_refresh(true);
+                }
+                try {
+                    $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
+                } finally {
+                    if ($forceRefresh) {
+                        project_set_force_refresh(false);
+                    }
+                }
+                $headerMetrics = project_header_metrics($countProjects, $lines);
+                $projectCount = $headerMetrics['project_count'];
                 $totalCost = $headerMetrics['cost'];
                 $totalRevenue = $headerMetrics['revenue'];
                 $totalProfit = $headerMetrics['profit'];
