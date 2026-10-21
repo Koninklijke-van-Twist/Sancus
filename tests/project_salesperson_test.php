@@ -196,10 +196,10 @@ function test_assert(string $name, bool $condition, string $detail = ''): void
     echo "FAIL {$name}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
 }
 
-foreach (['Completed', 'completed', ' Completed '] as $status) {
+foreach (['Completed', 'completed', ' Completed ', 'Voltooid', 'voltooid', ' VOLTOOID '] as $status) {
     test_assert('afgesloten: ' . $status, project_job_status_is_closed($status));
 }
-foreach (['Open', 'open', '2', 'Planning', '0', 'Offerte', '1', 'Quote', 'Geannuleerd', 'Afgesloten', 'Voltooid', '3', ''] as $status) {
+foreach (['Open', 'open', '2', 'Planning', '0', 'Offerte', '1', 'Quote', 'Geannuleerd', 'Afgesloten', '3', ''] as $status) {
     test_assert('open: ' . ($status === '' ? '(leeg)' : $status), project_job_status_is_closed($status) === false);
 }
 

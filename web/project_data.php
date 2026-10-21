@@ -630,9 +630,9 @@ function project_normalize_project_row(array $row): array
 }
 
 /**
- * Live Job Status is Open of Completed. Alleen Completed telt als afgesloten.
- * project_normalize_job_status (0–3 → Planning/Offerte/Open/Voltooid) wordt hier
- * niet toegepast, zodat Voltooid of een numerieke code niet als Completed geldt.
+ * Job Status geldt als afgesloten bij 'Completed' (enumwaarde) of 'Voltooid'
+ * (caption die BC/Mímir in responses teruggeeft), hoofdletterongevoelig en getrimd.
+ * Een ruwe numerieke code ('3') telt hier niet als afgesloten.
  */
 function project_job_status_is_closed(string $status): bool
 {
@@ -643,7 +643,7 @@ function project_job_status_is_closed(string $status): bool
         $status = strtolower($status);
     }
 
-    return $status === 'completed';
+    return $status === 'completed' || $status === 'voltooid';
 }
 
 /**
