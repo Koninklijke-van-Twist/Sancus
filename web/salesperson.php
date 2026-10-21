@@ -525,6 +525,8 @@ $dataAgeLabel = $dataCachedAt !== null
     var timer = null;
     var controller = null;
     var active = -1;
+    var salespersonKind = <?= json_encode(LOC('sancus.salesperson.title'), JSON_UNESCAPED_UNICODE) ?>;
+    var customerKind = <?= json_encode(LOC('sancus.meta.customer'), JSON_UNESCAPED_UNICODE) ?>;
     function hide() {
         list.hidden = true;
         list.innerHTML = '';
@@ -550,31 +552,71 @@ $dataAgeLabel = $dataCachedAt !== null
             input.form.requestSubmit();
         }
     }
-    function render(matches) {
+    function chooseCustomer(no) {
+        if (!no) {
+            return;
+        }
+        hide();
+        var params = new URLSearchParams();
+        params.set('company', company ? company.value : '');
+        params.set('customer', no);
+        var langInput = input.form ? input.form.querySelector('input[name="lang"]') : null;
+        params.set('lang', langInput && langInput.value ? langInput.value : 'nl');
+        var dateFrom = input.form ? input.form.querySelector('input[name="date_from"]') : null;
+        if (dateFrom && dateFrom.value) {
+            params.set('date_from', dateFrom.value);
+        }
+        var loader = document.getElementById('sancus-loader');
+        if (loader) {
+            loader.classList.add('is-visible');
+            loader.setAttribute('aria-hidden', 'false');
+            loader.setAttribute('aria-busy', 'true');
+        }
+        window.location.href = 'customer.php?' + params.toString();
+    }
+    function addSuggestButton(label, codeLine, onClick) {
+        var item = document.createElement('li');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        if (codeLine) {
+            var code = document.createElement('span');
+            code.className = 'sancus-suggest-code';
+            code.textContent = codeLine;
+            button.appendChild(code);
+        }
+        button.addEventListener('mousedown', function (event) {
+            event.preventDefault();
+        });
+        button.addEventListener('click', onClick);
+        item.appendChild(button);
+        list.appendChild(item);
+    }
+    function render(data) {
         list.innerHTML = '';
-        if (!matches || !matches.length) {
+        var matches = (data && data.matches) || [];
+        var customers = (data && data.customers) || [];
+        if (!matches.length && !customers.length) {
             hide();
             return;
         }
         matches.forEach(function (match) {
-            var item = document.createElement('li');
-            var button = document.createElement('button');
-            button.type = 'button';
-            button.textContent = match.name || match.code || '';
+            var line = salespersonKind;
             if (match.code) {
-                var code = document.createElement('span');
-                code.className = 'sancus-suggest-code';
-                code.textContent = match.code;
-                button.appendChild(code);
+                line += ' · ' + match.code;
             }
-            button.addEventListener('mousedown', function (event) {
-                event.preventDefault();
-            });
-            button.addEventListener('click', function () {
+            addSuggestButton(match.name || match.code || '', line, function () {
                 choose(match.code || '');
             });
-            item.appendChild(button);
-            list.appendChild(item);
+        });
+        customers.forEach(function (customer) {
+            var line = customerKind;
+            if (customer.no) {
+                line += ' · ' + customer.no;
+            }
+            addSuggestButton(customer.name || customer.no || '', line, function () {
+                chooseCustomer(customer.no || '');
+            });
         });
         list.hidden = false;
         active = -1;
@@ -606,7 +648,7 @@ $dataAgeLabel = $dataCachedAt !== null
             if (input.value.trim() !== query) {
                 return;
             }
-            render((data && data.matches) || []);
+            render(data || {});
         }).catch(function () {});
     }
     input.addEventListener('input', function () {

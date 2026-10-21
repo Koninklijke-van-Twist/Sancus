@@ -20,6 +20,11 @@ const SANCUS_CONTRACT_SELECT = 'KVT_Total_Sales_Price';
 const SANCUS_SALESPERSON_SELECT = 'Code,Name';
 const SANCUS_CUSTOMER_SALESPERSON_SELECT = 'No,Name,Salesperson_Code';
 const SANCUS_CONTRACT_BY_CUSTOMER_SELECT = 'Contract_No,Customer_No,Name,KVT_Total_Sales_Price';
+const SANCUS_CUSTOMER_MATCH_SELECT = 'Customer_No,Name';
+const SANCUS_CUSTOMER_CONTRACT_HEADER_SELECT = 'Contract_No,Customer_No,Name,Description,Status,Starting_Date';
+const SANCUS_DEFAULT_DIMENSION_SELECT = 'Table_ID,No,Dimension_Code,Dimension_Value_Code,Dimension_Value_Name';
+const SANCUS_CUSTOMER_TABLE_ID = 18;
+const SANCUS_MAIN_DEBTOR_DIMENSION = 'MAIN_DEBTOR';
 const SANCUS_PROJECTEN_BY_SALESPERSON_SELECT = 'KVT_Contract_No,KVT_Sales_Person_Code';
 const SANCUS_PROJECTEN_STATUS_SELECT = 'No,Status,KVT_Contract_No';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
@@ -660,7 +665,7 @@ function project_normalize_match_text(string $value): string
 }
 
 /**
- * CT…/PRJ… is een contract- of projectnummer. Dan geen verkoperssuggesties.
+ * CT…/PRJ… is een contract- of projectnummer. Dan geen verkoper- of klantzoektocht.
  */
 function project_query_is_contract_or_project_number(string $query): bool
 {
@@ -902,6 +907,428 @@ function project_fetch_contracts_by_customer_nos(string $company, array $custome
     });
 
     return $contracts;
+}
+
+/**
+ * Klantzoektocht op AppMaintenanceContracts.
+ * Customer_No eq of contains(Name, …). Leeg bij een contract-/projectnummer of een plak.
+ */
+function project_customer_odata_filter(string $query): string
+{
+    $query = trim($query);
+    if ($query === '' || project_input_is_blob($query) || project_query_is_contract_or_project_number($query)) {
+        return '';
+    }
+    $length = function_exists('mb_strlen') ? mb_strlen($query) : strlen($query);
+    if ($length < 2 || $length > 100) {
+        return '';
+    }
+
+    $escaped = project_escape_odata_string($query);
+    if ($escaped === '') {
+        return '';
+    }
+
+    return "Customer_No eq '" . $escaped . "' or contains(Name,'" . $escaped . "')";
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @return list<array{no:string,name:string}>
+ */
+function project_customers_from_contract_rows(array $rows): array
+{
+    $byNo = [];
+    $order = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $no = project_odata_scalar_string($row['Customer_No'] ?? null);
+        if ($no === '') {
+            continue;
+        }
+        $key = project_normalize_match_text($no);
+        $name = project_odata_scalar_string($row['Name'] ?? null);
+        if (!isset($byNo[$key])) {
+            $order[] = $key;
+            $byNo[$key] = ['no' => $no, 'name' => $name];
+            continue;
+        }
+        if ($byNo[$key]['name'] === '' && $name !== '') {
+            $byNo[$key]['name'] = $name;
+        }
+    }
+
+    $customers = [];
+    foreach ($order as $key) {
+        $customers[] = $byNo[$key];
+    }
+
+    return $customers;
+}
+
+/**
+ * Exact klantnummer of exacte naam wint van een contains-treffer.
+ *
+ * @param list<array{no:string,name:string}> $customers
+ * @return list<array{no:string,name:string}>
+ */
+function project_match_customers(array $customers, string $query, int $limit = 8): array
+{
+    $needle = project_normalize_match_text($query);
+    if ($needle === '') {
+        return [];
+    }
+
+    $exact = [];
+    $partial = [];
+    foreach ($customers as $customer) {
+        if (!is_array($customer)) {
+            continue;
+        }
+        $no = trim((string) ($customer['no'] ?? ''));
+        $name = trim((string) ($customer['name'] ?? ''));
+        if ($no === '') {
+            continue;
+        }
+        $row = ['no' => $no, 'name' => $name];
+        $noKey = project_normalize_match_text($no);
+        $nameKey = project_normalize_match_text($name);
+        if ($noKey === $needle || ($nameKey !== '' && $nameKey === $needle)) {
+            $exact[] = $row;
+            continue;
+        }
+        $partial[] = $row;
+    }
+
+    $chosen = $exact !== [] ? $exact : $partial;
+    usort($chosen, static function (array $a, array $b): int {
+        $byName = strcasecmp($a['name'], $b['name']);
+        if ($byName !== 0) {
+            return $byName;
+        }
+
+        return strnatcasecmp($a['no'], $b['no']);
+    });
+
+    if ($limit > 0 && count($chosen) > $limit) {
+        return array_slice($chosen, 0, $limit);
+    }
+
+    return $chosen;
+}
+
+/**
+ * @return list<array{no:string,name:string}>
+ */
+function project_find_customers(string $company, string $query, int $ttl = 3600, int $limit = 8): array
+{
+    $filter = project_customer_odata_filter($query);
+    if ($filter === '') {
+        return [];
+    }
+
+    $rows = project_fetch_rows($company, 'AppMaintenanceContracts', [
+        '$select' => SANCUS_CUSTOMER_MATCH_SELECT,
+        '$filter' => $filter,
+    ], $ttl);
+
+    return project_match_customers(project_customers_from_contract_rows($rows), $query, $limit);
+}
+
+/**
+ * @param list<string> $customerNos
+ * @return list<string>
+ */
+function project_unique_customer_nos(array $customerNos): array
+{
+    $out = [];
+    $seen = [];
+    foreach ($customerNos as $customerNo) {
+        $customerNo = trim((string) $customerNo);
+        if ($customerNo === '' || strlen($customerNo) > 50 || preg_match('/[\t\r\n]/', $customerNo) === 1) {
+            continue;
+        }
+        $key = project_normalize_match_text($customerNo);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $out[] = $customerNo;
+    }
+
+    return $out;
+}
+
+/**
+ * MAIN_DEBTOR van één klant.
+ * Live: DefaultDimensions?$filter=Table_ID eq 18 and No eq '<klant>' and Dimension_Code eq 'MAIN_DEBTOR'
+ *
+ * @return array{code:string,name:string}|null
+ */
+function project_fetch_main_debtor(string $company, string $customerNo, int $ttl = 3600): ?array
+{
+    $customerNo = trim($customerNo);
+    if ($customerNo === '' || strlen($customerNo) > 50 || preg_match('/[\t\r\n]/', $customerNo) === 1) {
+        return null;
+    }
+
+    $filter = 'Table_ID eq ' . SANCUS_CUSTOMER_TABLE_ID
+        . " and No eq '" . project_escape_odata_string($customerNo) . "'"
+        . " and Dimension_Code eq '" . project_escape_odata_string(SANCUS_MAIN_DEBTOR_DIMENSION) . "'";
+    $rows = project_try_fetch_rows($company, 'DefaultDimensions', [
+        '$select' => SANCUS_DEFAULT_DIMENSION_SELECT,
+        '$filter' => $filter,
+        '$top' => '5',
+    ], $ttl);
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $code = project_odata_scalar_string($row['Dimension_Value_Code'] ?? null);
+        if ($code === '') {
+            continue;
+        }
+
+        return [
+            'code' => $code,
+            'name' => project_odata_scalar_string($row['Dimension_Value_Name'] ?? null),
+        ];
+    }
+
+    return null;
+}
+
+/**
+ * Alle klantnummers met dezelfde MAIN_DEBTOR-waarde.
+ * Live: DefaultDimensions?$filter=Table_ID eq 18 and Dimension_Code eq 'MAIN_DEBTOR' and Dimension_Value_Code eq '<code>'
+ * No is het klantnummer, ook als de klant niet meer op AppCustomerCard staat.
+ *
+ * @return list<string>
+ */
+function project_fetch_customer_nos_for_main_debtor(string $company, string $valueCode, int $ttl = 3600): array
+{
+    $valueCode = trim($valueCode);
+    if ($valueCode === '' || strlen($valueCode) > 50 || preg_match('/[\t\r\n]/', $valueCode) === 1) {
+        return [];
+    }
+
+    $filter = 'Table_ID eq ' . SANCUS_CUSTOMER_TABLE_ID
+        . " and Dimension_Code eq '" . project_escape_odata_string(SANCUS_MAIN_DEBTOR_DIMENSION) . "'"
+        . " and Dimension_Value_Code eq '" . project_escape_odata_string($valueCode) . "'";
+    $rows = project_try_fetch_rows($company, 'DefaultDimensions', [
+        '$select' => SANCUS_DEFAULT_DIMENSION_SELECT,
+        '$filter' => $filter,
+    ], $ttl);
+
+    $nos = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $nos[] = project_odata_scalar_string($row['No'] ?? null);
+    }
+
+    return project_unique_customer_nos($nos);
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ * @return list<array{contract_no:string,customer_no:string,customer_name:string,description:string,status:string,starting_date:string}>
+ */
+function project_contract_headers_from_rows(array $rows): array
+{
+    $byNo = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contractNo = project_odata_scalar_string($row['Contract_No'] ?? null);
+        if ($contractNo === '') {
+            continue;
+        }
+        $key = project_normalize_match_text($contractNo);
+        $header = [
+            'contract_no' => $contractNo,
+            'customer_no' => project_odata_scalar_string($row['Customer_No'] ?? null),
+            'customer_name' => project_odata_scalar_string($row['Name'] ?? null),
+            'description' => project_odata_scalar_string($row['Description'] ?? null),
+            'status' => project_odata_scalar_string($row['Status'] ?? null),
+            'starting_date' => project_odata_scalar_string($row['Starting_Date'] ?? null),
+        ];
+        if (!isset($byNo[$key])) {
+            $byNo[$key] = $header;
+            continue;
+        }
+        foreach (['customer_no', 'customer_name', 'description', 'status', 'starting_date'] as $field) {
+            if ($byNo[$key][$field] === '' && $header[$field] !== '') {
+                $byNo[$key][$field] = $header[$field];
+            }
+        }
+    }
+
+    $headers = array_values($byNo);
+    usort($headers, static function (array $a, array $b): int {
+        return strnatcasecmp($b['contract_no'], $a['contract_no']);
+    });
+
+    return $headers;
+}
+
+/**
+ * Onderhoudscontracten voor een lijst klantnummers.
+ * Eén OData-call per chunk (Customer_No eq 'a' or …). Meerdere chunks gaan
+ * tegelijk via Mímir; zonder Mímir achter elkaar.
+ *
+ * @param list<string> $customerNos
+ * @return list<array{contract_no:string,customer_no:string,customer_name:string,description:string,status:string,starting_date:string}>
+ */
+function project_fetch_contract_headers_for_customers(string $company, array $customerNos, int $ttl = 3600): array
+{
+    $chunks = array_chunk(project_unique_customer_nos($customerNos), max(1, SANCUS_JOB_FILTER_CHUNK));
+    $filters = [];
+    foreach ($chunks as $chunk) {
+        $filter = project_odata_or_eq('Customer_No', $chunk);
+        if ($filter !== '') {
+            $filters[] = $filter;
+        }
+    }
+    if ($filters === []) {
+        return [];
+    }
+
+    $queryFor = static function (string $filter): array {
+        return [
+            '$select' => SANCUS_CUSTOMER_CONTRACT_HEADER_SELECT,
+            '$filter' => $filter,
+        ];
+    };
+
+    $rawRows = [];
+    if (count($filters) === 1) {
+        $rawRows = project_fetch_rows($company, 'AppMaintenanceContracts', $queryFor($filters[0]), $ttl);
+    } else {
+        $calls = [];
+        foreach ($filters as $index => $filter) {
+            $calls['contracts_' . $index] = [
+                'entity' => 'AppMaintenanceContracts',
+                'query' => $queryFor($filter),
+            ];
+        }
+        $parallel = project_fetch_rows_parallel($company, $calls, $ttl);
+        if (is_array($parallel)) {
+            foreach ($filters as $index => $filter) {
+                $part = $parallel['contracts_' . $index] ?? [];
+                if (is_array($part)) {
+                    foreach ($part as $row) {
+                        $rawRows[] = $row;
+                    }
+                }
+            }
+        } else {
+            foreach ($filters as $filter) {
+                foreach (project_fetch_rows($company, 'AppMaintenanceContracts', $queryFor($filter), $ttl) as $row) {
+                    $rawRows[] = $row;
+                }
+            }
+        }
+    }
+
+    return project_contract_headers_from_rows($rawRows);
+}
+
+/**
+ * Onderhoudscontracten van een klant, plus andere klantnummers met dezelfde MAIN_DEBTOR.
+ * Zonder die dimensie alleen de klant zelf. Klantnummers zonder contract vallen weg.
+ * Geen projecten.
+ *
+ * @return array{
+ *   found:bool,
+ *   customer:array{no:string,name:string},
+ *   main_debtor:?array{code:string,name:string},
+ *   groups:list<array{customer_no:string,customer_name:string,contracts:list<array<string,mixed>>}>
+ * }
+ */
+function project_customer_contract_groups(string $company, string $customerNo, int $ttl = 3600): array
+{
+    $customerNo = trim($customerNo);
+    $empty = [
+        'found' => false,
+        'customer' => ['no' => $customerNo, 'name' => ''],
+        'main_debtor' => null,
+        'groups' => [],
+    ];
+    if ($customerNo === '' || strlen($customerNo) > 50 || preg_match('/[\t\r\n]/', $customerNo) === 1) {
+        return $empty;
+    }
+
+    $debtor = project_fetch_main_debtor($company, $customerNo, $ttl);
+    $nos = [$customerNo];
+    if (is_array($debtor) && $debtor['code'] !== '') {
+        $siblings = project_fetch_customer_nos_for_main_debtor($company, $debtor['code'], $ttl);
+        if ($siblings !== []) {
+            $nos = array_merge($nos, $siblings);
+        }
+    }
+    $nos = project_unique_customer_nos($nos);
+    $headers = project_fetch_contract_headers_for_customers($company, $nos, $ttl);
+
+    $groups = [];
+    $order = [];
+    foreach ($headers as $header) {
+        $no = trim((string) ($header['customer_no'] ?? ''));
+        if ($no === '') {
+            continue;
+        }
+        $key = project_normalize_match_text($no);
+        if (!isset($groups[$key])) {
+            $order[] = $key;
+            $groups[$key] = [
+                'customer_no' => $no,
+                'customer_name' => trim((string) ($header['customer_name'] ?? '')),
+                'contracts' => [],
+            ];
+        } elseif ($groups[$key]['customer_name'] === '' && trim((string) ($header['customer_name'] ?? '')) !== '') {
+            $groups[$key]['customer_name'] = trim((string) $header['customer_name']);
+        }
+        $groups[$key]['contracts'][] = $header;
+    }
+
+    $anchorKey = project_normalize_match_text($customerNo);
+    $ordered = [];
+    foreach ($order as $key) {
+        $ordered[] = $groups[$key];
+    }
+    usort($ordered, static function (array $a, array $b) use ($anchorKey): int {
+        $aAnchor = project_normalize_match_text((string) $a['customer_no']) === $anchorKey;
+        $bAnchor = project_normalize_match_text((string) $b['customer_no']) === $anchorKey;
+        if ($aAnchor !== $bAnchor) {
+            return $aAnchor ? -1 : 1;
+        }
+        $byName = strcasecmp((string) $a['customer_name'], (string) $b['customer_name']);
+        if ($byName !== 0) {
+            return $byName;
+        }
+
+        return strnatcasecmp((string) $a['customer_no'], (string) $b['customer_no']);
+    });
+
+    $anchorName = '';
+    foreach ($ordered as $group) {
+        if (project_normalize_match_text((string) $group['customer_no']) === $anchorKey) {
+            $anchorName = (string) $group['customer_name'];
+            break;
+        }
+    }
+
+    return [
+        'found' => $ordered !== [],
+        'customer' => ['no' => $customerNo, 'name' => $anchorName],
+        'main_debtor' => $debtor,
+        'groups' => $ordered,
+    ];
 }
 
 /**
