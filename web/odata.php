@@ -68,9 +68,58 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 3600): arr
         @unlink($cachePath);
     }
 
-    if (is_file($cachePath)) {
+    $loaded = odata_read_through_cache(
+        $cachePath,
+        $ttlSeconds,
+        static function () use ($url, $auth): array {
+            $all = [];
+            $next = $url;
+            $seenLinks = [];
 
+            while (is_string($next) && $next !== '') {
+                if (isset($seenLinks[$next])) {
+                    error_log('[Sancus] OData nextLink herhaalt zich, stop met pagineren');
+                    break;
+                }
+                $seenLinks[$next] = true;
+                $resp = odata_get_json($next, $auth);
+
+                if (!isset($resp['value']) || !is_array($resp['value'])) {
+                    throw new Exception("OData response missing 'value' array");
+                }
+
+                foreach ($resp['value'] as $row) {
+                    if (is_array($row)) {
+                        $all[] = $row;
+                    }
+                }
+                $next = $resp['@odata.nextLink'] ?? null;
+                consolelog("Reading next chunk...\n");
+            }
+
+            return $all;
+        },
+        $url
+    );
+    consolelog("Done, returning data.\n");
+    return $loaded;
+}
+
+/**
+ * Geldige cache teruggeven, of bij een leeg/kapot bestand opnieuw ophalen.
+ * Een mislukte fetch (exception) schrijft niets. Een geslaagde lege lijst wel.
+ *
+ * @param callable():array $fetch
+ * @return list<mixed>
+ */
+function odata_read_through_cache(string $cachePath, int $ttlSeconds, callable $fetch, string $sourceUrl): array
+{
+    $GLOBALS['ODATA_LAST_CACHED_AT'] = null;
+
+    if (is_file($cachePath)) {
         consolelog("Found in cache.\n");
+        $inodeBefore = @fileinode($cachePath);
+        $sizeBefore = (int) @filesize($cachePath);
         $cached = read_cache_payload($cachePath, $ttlSeconds);
         if ($cached['valid']) {
             consolelog("Returning data.\n");
@@ -78,35 +127,31 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 3600): arr
             if ($cachedAt > 0) {
                 $GLOBALS['ODATA_LAST_CACHED_AT'] = $cachedAt;
             }
-            return $cached['data'];
+            return is_array($cached['data']) ? $cached['data'] : [];
         }
 
-        if ($cached['delete']) {
+        $reason = trim((string) ($cached['reason'] ?? ''));
+        if ($reason !== '') {
+            error_log('[Sancus] cachebestand is ' . $reason . ', opnieuw ophalen: ' . basename($cachePath));
+        } else {
             consolelog("Cache expired.\n");
-            @unlink($cachePath);
+        }
+
+        if (!empty($cached['delete'])) {
+            sancus_unlink_if_same_file($cachePath, $inodeBefore, $sizeBefore);
         }
     }
 
-    $all = [];
-    $next = $url;
-
-    while ($next) {
-        $resp = odata_get_json($next, $auth);
-
-        if (!isset($resp['value']) || !is_array($resp['value'])) {
-            throw new Exception("OData response missing 'value' array");
-        }
-
-        $all = array_merge($all, $resp['value']);
-        $next = $resp['@odata.nextLink'] ?? null;
-        consolelog("Reading next chunk...\n");
+    $all = $fetch();
+    if (!is_array($all)) {
+        error_log('[Sancus] cache overgeslagen: OData-resultaat is geen lijst');
+        throw new RuntimeException('OData-resultaat is geen lijst');
     }
 
     consolelog("Fetched. Now caching...\n");
     $now = time();
-    write_cache_json($cachePath, $all, $ttlSeconds, $url);
+    write_cache_json($cachePath, $all, $ttlSeconds, $sourceUrl);
     $GLOBALS['ODATA_LAST_CACHED_AT'] = $now;
-    consolelog("Done, returning data.\n");
     return $all;
 }
 
@@ -249,7 +294,18 @@ function maybe_cleanup_expired_cache_files(): void
         }
 
         $path = cache_base_dir() . '/' . $entry;
-        if (!is_file($path) || pathinfo($path, PATHINFO_EXTENSION) !== 'json') {
+        if (!is_file($path)) {
+            continue;
+        }
+        $extension = pathinfo($path, PATHINFO_EXTENSION);
+        if ($extension === 'tmp') {
+            $tmpAge = $now - (int) @filemtime($path);
+            if ($tmpAge > 3600) {
+                @unlink($path);
+            }
+            continue;
+        }
+        if ($extension !== 'json') {
             continue;
         }
 
@@ -263,14 +319,25 @@ function maybe_cleanup_expired_cache_files(): void
 
 function read_cache_payload(string $path, int $fallbackTtlSeconds): array
 {
+    clearstatcache(true, $path);
+    $size = @filesize($path);
+    if ($size === false || $size === 0) {
+        return ['valid' => false, 'delete' => true, 'reason' => 'leeg (0 bytes)', 'data' => []];
+    }
+
     $raw = @file_get_contents($path);
-    if ($raw === false || $raw === '') {
-        return ['valid' => false, 'delete' => true, 'data' => []];
+    if ($raw === false || trim($raw) === '') {
+        return ['valid' => false, 'delete' => true, 'reason' => 'leeg (0 bytes)', 'data' => []];
     }
 
     $payload = json_decode($raw, true);
     if (!is_array($payload)) {
-        return ['valid' => false, 'delete' => true, 'data' => []];
+        return [
+            'valid' => false,
+            'delete' => true,
+            'reason' => 'onleesbaar (' . json_last_error_msg() . ')',
+            'data' => [],
+        ];
     }
 
     if (isset($payload['_meta']) && isset($payload['data']) && is_array($payload['data'])) {
@@ -288,7 +355,10 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds): array
         return ['valid' => false, 'delete' => true, 'data' => [], 'cached_at' => 0];
     }
 
-    if ($fallbackTtlSeconds > 0) {
+    // Oud formaat: een niet-lege lijst rijen, zonder _meta. Een lege lijst of
+    // een los object is geen bruikbare cache (dat was een afgekapte write).
+    $legacyList = $payload !== [] && array_keys($payload) === range(0, count($payload) - 1);
+    if ($legacyList && $fallbackTtlSeconds > 0) {
         $mtime = (int) @filemtime($path);
         $age = time() - $mtime;
         if ($age >= 0 && $age < $fallbackTtlSeconds) {
@@ -303,7 +373,107 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds): array
         return ['valid' => false, 'delete' => true, 'data' => [], 'cached_at' => 0];
     }
 
-    return ['valid' => false, 'delete' => false, 'data' => [], 'cached_at' => 0];
+    return [
+        'valid' => false,
+        'delete' => true,
+        'reason' => 'ongeldige cachestructuur',
+        'data' => [],
+        'cached_at' => 0,
+    ];
+}
+
+/**
+ * Verwijder een slecht cachebestand alleen als het nog hetzelfde bestand is.
+ * Een gelijktijdige schrijver die net een nieuw bestand heeft neergezet blijft staan.
+ */
+function sancus_unlink_if_same_file(string $path, $inodeBefore, int $sizeBefore): void
+{
+    clearstatcache(true, $path);
+    if (!is_file($path)) {
+        return;
+    }
+    $inodeNow = @fileinode($path);
+    $sizeNow = (int) @filesize($path);
+    if ($inodeBefore !== false && $inodeNow !== false && $inodeNow !== $inodeBefore) {
+        return;
+    }
+    if ($sizeNow !== $sizeBefore && $sizeNow > 0) {
+        return;
+    }
+    @unlink($path);
+}
+
+/**
+ * Schrijf bytes via een eigen tijdelijk bestand en rename.
+ * Een lege of onvolledige write wordt niet gepubliceerd.
+ *
+ * Niet $path.'.tmp': file_put_contents truncatet dat gedeelde bestand vóór
+ * flock, en rename zet de 0 bytes dan over de cache. Dat gaf bij een reload
+ * een leeg cachebestand (ook vóór #11). Elke schrijver krijgt daarom een eigen naam.
+ */
+function sancus_atomic_write(string $path, string $contents, string $context): bool
+{
+    if ($contents === '') {
+        error_log('[Sancus] ' . $context . ' schrijven overgeslagen: leeg resultaat');
+        return false;
+    }
+
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        error_log('[Sancus] ' . $context . ' map aanmaken mislukt: ' . $dir);
+        return false;
+    }
+
+    $tmp = $path . '.' . getmypid() . '.' . bin2hex(random_bytes(4)) . '.tmp';
+    $fh = @fopen($tmp, 'xb');
+    if ($fh === false) {
+        error_log('[Sancus] ' . $context . ' schrijven mislukt: ' . $tmp);
+        return false;
+    }
+
+    $written = 0;
+    $expected = strlen($contents);
+    $offset = 0;
+    while ($offset < $expected) {
+        $chunk = @fwrite($fh, substr($contents, $offset));
+        if ($chunk === false || $chunk === 0) {
+            break;
+        }
+        $written += $chunk;
+        $offset += $chunk;
+    }
+    @fflush($fh);
+    if (function_exists('fsync')) {
+        @fsync($fh);
+    }
+    @fclose($fh);
+
+    clearstatcache(true, $tmp);
+    $size = @filesize($tmp);
+    $tmpInode = @fileinode($tmp);
+    if ($written !== $expected || $size !== $expected || $size === 0) {
+        @unlink($tmp);
+        error_log('[Sancus] ' . $context . ' onvolledig geschreven (' . (int) $written . '/' . $expected . '): ' . basename($path));
+        return false;
+    }
+
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        error_log('[Sancus] ' . $context . ' rename mislukt naar ' . basename($path));
+        return false;
+    }
+
+    clearstatcache(true, $path);
+    $finalInode = @fileinode($path);
+    $finalSize = @filesize($path);
+    // Alleen ons eigen lege bestand weghalen. Een nieuwere rename mag blijven staan.
+    if ($tmpInode !== false && $finalInode === $tmpInode && ($finalSize === false || (int) $finalSize === 0)) {
+        sancus_unlink_if_same_file($path, $tmpInode, 0);
+        error_log('[Sancus] ' . $context . ' eindbestand is leeg (0 bytes), verwijderd: ' . basename($path));
+        return false;
+    }
+
+    return true;
 }
 function cache_path_for_key(string $cacheKey): string
 {
@@ -314,7 +484,6 @@ function cache_path_for_key(string $cacheKey): string
 
 function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = ''): void
 {
-    $tmp = $path . ".tmp";
     $now = time();
     $payload = [
         '_meta' => [
@@ -325,14 +494,19 @@ function write_cache_json(string $path, array $data, int $ttlSeconds, string $so
         'data' => $data,
     ];
 
-    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
-
-    if ($json === false) {
-        throw new Exception("Failed to encode cache JSON");
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false || $json === '') {
+        error_log('[Sancus] cache JSON encode mislukt: ' . json_last_error_msg());
+        return;
     }
 
-    file_put_contents($tmp, $json, LOCK_EX);
-    rename($tmp, $path);
+    $roundTrip = json_decode($json, true);
+    if (!is_array($roundTrip) || !isset($roundTrip['_meta']) || !is_array($roundTrip['data'] ?? null)) {
+        error_log('[Sancus] cache schrijven overgeslagen: resultaat is niet terug te lezen');
+        return;
+    }
+
+    sancus_atomic_write($path, $json, 'cache');
 }
 
 function odata_cache_read_payload_meta(string $path): ?array
@@ -398,6 +572,28 @@ function odata_cache_status_payload(): array
                 continue;
             }
 
+            clearstatcache(true, $path);
+            $inodeBefore = @fileinode($path);
+            $sizeBytes = @filesize($path);
+            if ($sizeBytes === false || $sizeBytes === 0) {
+                error_log('[Sancus] cachebestand is leeg (0 bytes), verwijderd: ' . $filename);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
+                continue;
+            }
+
+            $rawCache = @file_get_contents($path);
+            if ($rawCache === false || trim($rawCache) === '') {
+                error_log('[Sancus] cachebestand is leeg (0 bytes), verwijderd: ' . $filename);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
+                continue;
+            }
+            json_decode($rawCache, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                error_log('[Sancus] cachebestand is onleesbaar (' . json_last_error_msg() . '), verwijderd: ' . $filename);
+                sancus_unlink_if_same_file($path, $inodeBefore, (int) $sizeBytes);
+                continue;
+            }
+
             $meta = odata_cache_read_payload_meta($path);
             if ($meta === null) {
                 continue;
@@ -409,7 +605,6 @@ function odata_cache_status_payload(): array
                 continue;
             }
 
-            $sizeBytes = (int) $fileInfo->getSize();
             $totalBytes += $sizeBytes;
 
             $url = (string) ($meta['source_url'] ?? '');

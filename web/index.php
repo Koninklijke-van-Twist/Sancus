@@ -240,6 +240,8 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
 
     $step = trim((string) ($_REQUEST['step'] ?? 'init'));
     $loadId = trim((string) ($_REQUEST['load_id'] ?? ''));
+    $stepEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $stepPrefs = $stepEmail !== '' ? loadUserPrefs($stepEmail) : [];
     try {
         $payload = project_load_run_step($loadId, $step, [
             'company' => $stepCompany,
@@ -248,9 +250,23 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
             'ttl' => SANCUS_NIGHTLY_CACHE_TTL,
             'force_refresh' => in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true),
+            'include_unbooked_costs' => !empty($stepPrefs['include_unbooked_costs']),
         ]);
         echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $loadStepError) {
+        $loadStepMessage = $loadStepError->getMessage();
+        if (strlen($loadStepMessage) > 500) {
+            $loadStepMessage = substr($loadStepMessage, 0, 500) . '…';
+        }
+        error_log(sprintf(
+            '[Sancus] load_step mislukt company=%s query=%s step=%s: %s in %s:%d',
+            $stepCompany,
+            trim((string) ($_REQUEST['query'] ?? '')),
+            $step,
+            $loadStepMessage,
+            $loadStepError->getFile(),
+            $loadStepError->getLine()
+        ));
         http_response_code(500);
         echo json_encode([
             'ok' => false,
@@ -344,8 +360,17 @@ try {
         $stored = project_load_state_read($resultId);
         $overview = is_array($stored['overview'] ?? null) ? $stored['overview'] : null;
         if ($overview === null) {
-            $errorKey = 'sancus.error.load_failed';
-            $view = 'search';
+            $retryQuery = $searchQuery !== '' ? $searchQuery : $contractNo;
+            if ($retryQuery !== '') {
+                error_log('[Sancus] resultaatbestand ontbreekt of is ongeldig, opnieuw ophalen: ' . $resultId);
+                $asyncLoad = true;
+                $searchQuery = $retryQuery;
+                $contractNo = $retryQuery;
+                $view = 'loading';
+            } else {
+                $errorKey = 'sancus.error.load_failed';
+                $view = 'search';
+            }
         } else {
             $projects = is_array($overview['projects'] ?? null) ? $overview['projects'] : [];
             $lines = is_array($overview['lines'] ?? null) ? $overview['lines'] : [];
@@ -362,8 +387,13 @@ try {
                 $searchQuery = (string) ($overview['query'] ?? $contractNo);
             }
             $projectCount = count($projects);
-
-            if ($lines === [] && $projects === []) {
+            $storedUnbooked = !array_key_exists('include_unbooked_costs', $overview)
+                || !empty($overview['include_unbooked_costs']);
+            if ($includeUnbookedCosts && !$storedUnbooked && ($searchQuery !== '' || $contractNo !== '')) {
+                error_log('[Sancus] resultaat zonder ongeboekte kosten, opnieuw ophalen: ' . $resultId);
+                $asyncLoad = true;
+                $view = 'loading';
+            } elseif ($lines === [] && $projects === []) {
                 $errorKey = 'sancus.error.project_not_found';
                 $view = 'search';
             } else {
@@ -383,7 +413,6 @@ try {
                 $postenCount = count($lines);
                 $view = 'posten';
             }
-            project_load_state_delete($resultId);
         }
     } elseif ($searchQuery !== '') {
         // Geen synchrone BC-load meer: voortgang via chunked API
@@ -392,6 +421,11 @@ try {
         $view = 'loading';
     }
 } catch (Throwable $loadError) {
+    $pageLoadMessage = $loadError->getMessage();
+    if (strlen($pageLoadMessage) > 500) {
+        $pageLoadMessage = substr($pageLoadMessage, 0, 500) . '…';
+    }
+    error_log('[Sancus] pagina-load mislukt: ' . $pageLoadMessage . ' in ' . $loadError->getFile() . ':' . $loadError->getLine());
     $errorKey = 'sancus.error.load_failed';
     $view = 'search';
     $asyncLoad = false;
