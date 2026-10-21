@@ -14,15 +14,11 @@ require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/auth_helper.php';
 require_once __DIR__ . '/project_data.php';
 require_once __DIR__ . '/project_load.php';
+require_once __DIR__ . '/portal_format.php';
 
 /**
  * Functies
  */
-
-function portal_h(?string $value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
 
 function portal_url(array $params = []): string
 {
@@ -41,39 +37,6 @@ function portal_url(array $params = []): string
     $query['lang'] = $lang;
 
     return $path . '?' . http_build_query($query);
-}
-
-function portal_format_amount(float $amount): string
-{
-    return '€ ' . number_format($amount, 2, ',', '.');
-}
-
-function portal_format_quantity(float $quantity): string
-{
-    if (abs($quantity - round($quantity)) < 0.00001) {
-        return number_format($quantity, 0, ',', '.');
-    }
-
-    return rtrim(rtrim(number_format($quantity, 2, ',', '.'), '0'), ',');
-}
-
-function portal_quantity_unit(string $typeLabel): string
-{
-    switch ($typeLabel) {
-        case 'Uren':
-            return ' uur';
-        case 'Materiaal':
-            return ' st';
-        case 'Kilometers':
-            return ' km';
-        default:
-            return '';
-    }
-}
-
-function portal_format_quantity_with_unit(float $quantity, string $typeLabel): string
-{
-    return portal_format_quantity($quantity) . portal_quantity_unit($typeLabel);
 }
 
 function portal_format_hours_clock(float $hours): string
@@ -114,35 +77,6 @@ function portal_format_date(string $value): string
     return $value;
 }
 
-function portal_format_percent(?float $percent): string
-{
-    if ($percent === null) {
-        return '—';
-    }
-
-    return number_format($percent, 1, ',', '.') . '%';
-}
-
-function portal_display_value(string $value): string
-{
-    return $value !== '' ? $value : '—';
-}
-
-function portal_parse_date_param(string $value): string
-{
-    $value = trim($value);
-    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
-        return '';
-    }
-
-    $parts = explode('-', $value);
-    if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
-        return '';
-    }
-
-    return $value;
-}
-
 function portal_amount_cell(float $amount, string $kind, string $extraClass = '', string $subLabel = ''): string
 {
     $classes = trim('num ' . portal_amount_class($amount, $kind) . ' ' . $extraClass);
@@ -174,21 +108,6 @@ function portal_profit_cell(float $cost, float $revenue, bool $show): string
     }
 
     return $html . '</td>';
-}
-
-function portal_amount_class(float $amount, string $kind): string
-{
-    if (abs($amount) < 0.00001) {
-        return 'amount-zero';
-    }
-    if ($kind === 'cost') {
-        return 'amount-cost';
-    }
-    if ($kind === 'revenue') {
-        // Negatieve opbrengsten (credietnota's) rood, niet groen
-        return $amount < 0 ? 'amount-cost' : 'amount-revenue';
-    }
-    return $amount < 0 ? 'amount-cost' : 'amount-revenue';
 }
 
 function portal_group_cell(
@@ -247,7 +166,7 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'company' => $stepCompany,
             'query' => trim((string) ($_REQUEST['query'] ?? '')),
             'date_from' => portal_parse_date_param((string) ($_REQUEST['date_from'] ?? '')),
-            'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
+            'date_to' => '',
             'ttl' => SANCUS_NIGHTLY_CACHE_TTL,
             'force_refresh' => in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true),
             'include_unbooked_costs' => !empty($stepPrefs['include_unbooked_costs']),
@@ -318,18 +237,39 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = (string) ($companies[0] ?? '');
 }
 
+if (trim((string) ($_REQUEST['action'] ?? '')) === 'salesperson_suggest') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $suggestCompany = trim((string) ($_REQUEST['company'] ?? ''));
+    if ($suggestCompany === '' || !in_array($suggestCompany, $companies, true)) {
+        $suggestCompany = $company;
+    }
+    $suggestQuery = trim((string) ($_REQUEST['q'] ?? ''));
+    try {
+        auth_set_current_company_context($suggestCompany);
+        $suggestMatches = [];
+        $suggestLen = function_exists('mb_strlen') ? mb_strlen($suggestQuery) : strlen($suggestQuery);
+        if ($suggestLen >= 2 && !project_query_is_contract_or_project_number($suggestQuery)) {
+            $suggestMatches = project_find_salespersons($suggestCompany, $suggestQuery, SANCUS_NIGHTLY_CACHE_TTL, 8);
+        }
+        echo json_encode(['ok' => true, 'matches' => $suggestMatches], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $suggestError) {
+        $suggestMessage = $suggestError->getMessage();
+        if (strlen($suggestMessage) > 500) {
+            $suggestMessage = substr($suggestMessage, 0, 500) . '…';
+        }
+        error_log('[Sancus] verkoper-suggestie mislukt: ' . $suggestMessage);
+        echo json_encode(['ok' => false, 'matches' => []], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
+
 $searchQuery = trim((string) ($_GET['contract'] ?? ''));
 $focusProject = trim((string) ($_GET['focus'] ?? ''));
 $resultId = trim((string) ($_GET['result'] ?? ''));
 $forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
 $contractNo = '';
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
-$dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
-if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
-    $tmp = $dateFrom;
-    $dateFrom = $dateTo;
-    $dateTo = $tmp;
-}
 
 $view = 'search';
 $errorKey = '';
@@ -350,6 +290,9 @@ $totalKilometers = 0.0;
 $totalMaterialMoney = 0.0;
 $totalHoursMoney = 0.0;
 $totalKilometersMoney = 0.0;
+$closedCount = 0;
+$closedTotal = 0;
+$closedPercent = 0;
 $asyncLoad = false;
 $dataCachedAt = null;
 
@@ -398,17 +341,31 @@ try {
                 $view = 'search';
             } else {
                 $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
-                $totals = project_sum_amounts($lines);
-                $byType = project_sum_by_type($lines);
-                $totalCost = (float) ($totals['cost'] ?? 0);
-                $totalRevenue = (float) ($totals['revenue'] ?? 0);
-                $totalProfit = $totalRevenue - $totalCost;
-                $totalMaterial = (float) ($byType['Materiaal']['quantity'] ?? 0);
-                $totalHours = (float) ($byType['Uren']['quantity'] ?? 0);
-                $totalKilometers = (float) ($byType['Kilometers']['quantity'] ?? 0);
-                $totalMaterialMoney = (float) ($byType['Materiaal']['revenue'] ?? 0) - (float) ($byType['Materiaal']['cost'] ?? 0);
-                $totalHoursMoney = (float) ($byType['Uren']['revenue'] ?? 0) - (float) ($byType['Uren']['cost'] ?? 0);
-                $totalKilometersMoney = (float) ($byType['Kilometers']['revenue'] ?? 0) - (float) ($byType['Kilometers']['cost'] ?? 0);
+                if ($forceRefresh) {
+                    project_set_force_refresh(true);
+                }
+                try {
+                    $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
+                } finally {
+                    if ($forceRefresh) {
+                        project_set_force_refresh(false);
+                    }
+                }
+                $headerMetrics = project_header_metrics($countProjects, $lines);
+                $projectCount = $headerMetrics['project_count'];
+                $totalCost = $headerMetrics['cost'];
+                $totalRevenue = $headerMetrics['revenue'];
+                $totalProfit = $headerMetrics['profit'];
+                $totalProfitPct = $headerMetrics['profit_pct'];
+                $totalMaterial = $headerMetrics['material_qty'];
+                $totalHours = $headerMetrics['hours_qty'];
+                $totalKilometers = $headerMetrics['kilometers_qty'];
+                $totalMaterialMoney = $headerMetrics['material_money'];
+                $totalHoursMoney = $headerMetrics['hours_money'];
+                $totalKilometersMoney = $headerMetrics['kilometers_money'];
+                $closedCount = $headerMetrics['closed'];
+                $closedTotal = $headerMetrics['closed_total'];
+                $closedPercent = $headerMetrics['closed_percent'];
                 $tableRows = project_flatten_grouped_rows($lines);
                 $postenCount = count($lines);
                 $view = 'posten';
@@ -429,10 +386,6 @@ try {
     $errorKey = 'sancus.error.load_failed';
     $view = 'search';
     $asyncLoad = false;
-}
-
-if ($view === 'posten' && abs($totalRevenue) >= 0.00001) {
-    $totalProfitPct = ($totalProfit / $totalRevenue) * 100.0;
 }
 
 $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
@@ -697,8 +650,47 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         @media (min-width: 640px) {
             .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
-            .sancus-form-dates { grid-template-columns: 1fr 1fr; }
+            .sancus-form-dates { grid-template-columns: minmax(160px, 240px); }
         }
+        .sancus-suggest { position: relative; display: block; min-width: 0; }
+        .sancus-suggest-list {
+            position: absolute;
+            z-index: 40;
+            left: 0;
+            right: 0;
+            top: calc(100% + 4px);
+            margin: 0;
+            padding: 4px 0;
+            list-style: none;
+            background: #fff;
+            border: 1px solid var(--kvt-line);
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+            max-height: 240px;
+            overflow: auto;
+        }
+        .sancus-suggest-list button {
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+            padding: 10px 12px;
+            font: inherit;
+            font-weight: 600;
+            color: var(--kvt-text);
+            cursor: pointer;
+        }
+        .sancus-suggest-list button:hover,
+        .sancus-suggest-list button.is-active { background: #f1f5f9; }
+        .sancus-suggest-code {
+            display: block;
+            margin-top: 2px;
+            color: var(--kvt-muted);
+            font-size: 0.82em;
+            font-weight: 500;
+        }
+        .sancus-choose-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
         .sancus-loader {
             position: fixed;
             inset: 0;
@@ -863,7 +855,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             <div class="sancus-form-grid">
                 <label>
                     <?= portal_h(LOC('sancus.label.company')) ?>
-                    <select name="company">
+                    <select name="company" id="sancus-search-company">
                         <?php foreach ($companies as $companyOption): ?>
                             <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
                         <?php endforeach; ?>
@@ -871,7 +863,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 </label>
                 <label>
                     <?= portal_h(LOC('sancus.label.contract')) ?>
-                    <input type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
+                    <span class="sancus-suggest">
+                        <input id="sancus-search-query" type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
+                        <ul class="sancus-suggest-list" id="sancus-suggest-list" hidden></ul>
+                    </span>
                 </label>
                 <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
             </div>
@@ -879,10 +874,6 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 <label>
                     <?= portal_h(LOC('sancus.label.date_from')) ?>
                     <input type="date" name="date_from" value="<?= portal_h($dateFrom) ?>">
-                </label>
-                <label>
-                    <?= portal_h(LOC('sancus.label.date_to')) ?>
-                    <input type="date" name="date_to" value="<?= portal_h($dateTo) ?>">
                 </label>
             </div>
         </form>
@@ -897,7 +888,6 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             data-company="<?= portal_h($company) ?>"
             data-query="<?= portal_h($searchQuery) ?>"
             data-date-from="<?= portal_h($dateFrom) ?>"
-            data-date-to="<?= portal_h($dateTo) ?>"
             data-focus="<?= portal_h($focusProject) ?>"
             data-refresh="<?= $forceRefresh ? '1' : '0' ?>"
             data-lang="<?= portal_h(getCurrentLanguage()) ?>">
@@ -924,9 +914,6 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             }
             if ($dateFrom !== '') {
                 $refreshParams['date_from'] = $dateFrom;
-            }
-            if ($dateTo !== '') {
-                $refreshParams['date_to'] = $dateTo;
             }
             $refreshUrl = portal_url($refreshParams);
             $dataAgeLabel = $dataCachedAt !== null
@@ -998,6 +985,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.kilometers')) ?></span>
                     <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalKilometersMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.closed')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(LOC('sancus.meta.closed_value', $closedPercent, $closedCount, $closedTotal)) ?></span>
                 </div>
             </div>
 
@@ -1530,12 +1521,8 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             params.set('focus', focus);
         }
         var dateFrom = panel.getAttribute('data-date-from') || '';
-        var dateTo = panel.getAttribute('data-date-to') || '';
         if (dateFrom) {
             params.set('date_from', dateFrom);
-        }
-        if (dateTo) {
-            params.set('date_to', dateTo);
         }
         return 'index.php?' + params.toString();
     }
@@ -1547,7 +1534,6 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         body.set('company', panel.getAttribute('data-company') || '');
         body.set('query', panel.getAttribute('data-query') || '');
         body.set('date_from', panel.getAttribute('data-date-from') || '');
-        body.set('date_to', panel.getAttribute('data-date-to') || '');
         if (loadId) {
             body.set('load_id', loadId);
         }
@@ -1571,21 +1557,56 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
 
             setProgress(data.progress || 0, data.label || 'resolve');
 
+            function pageParams() {
+                var params = new URLSearchParams();
+                params.set('company', panel.getAttribute('data-company') || '');
+                params.set('lang', panel.getAttribute('data-lang') || 'nl');
+                var df = panel.getAttribute('data-date-from') || '';
+                if (df) {
+                    params.set('date_from', df);
+                }
+                return params;
+            }
+
+            if (data.redirect_salesperson && data.redirect_salesperson.code) {
+                var salespersonParams = pageParams();
+                salespersonParams.set('salesperson', data.redirect_salesperson.code);
+                window.location.href = 'salesperson.php?' + salespersonParams.toString();
+                return;
+            }
+
+            if (data.salesperson_matches && data.salesperson_matches.length) {
+                var list = document.createElement('ul');
+                list.className = 'sancus-choose-list';
+                data.salesperson_matches.forEach(function (match) {
+                    var item = document.createElement('li');
+                    item.className = 'sancus-list-item';
+                    var link = document.createElement('a');
+                    link.className = 'contract-nav';
+                    var choiceParams = pageParams();
+                    choiceParams.set('salesperson', match.code || '');
+                    link.href = 'salesperson.php?' + choiceParams.toString();
+                    var label = match.name || match.code || '';
+                    if (match.name && match.code) {
+                        label += ' (' + match.code + ')';
+                    }
+                    link.textContent = label;
+                    item.appendChild(link);
+                    list.appendChild(item);
+                });
+                panel.innerHTML = '';
+                var heading = document.createElement('h2');
+                heading.textContent = <?= json_encode(LOC('sancus.salesperson.choose'), JSON_UNESCAPED_UNICODE) ?>;
+                panel.appendChild(heading);
+                panel.appendChild(list);
+                return;
+            }
+
             if (data.redirect && data.redirect.contract) {
-                var redirectParams = new URLSearchParams();
-                redirectParams.set('company', panel.getAttribute('data-company') || '');
+                var redirectParams = pageParams();
                 redirectParams.set('contract', data.redirect.contract);
-                redirectParams.set('lang', panel.getAttribute('data-lang') || 'nl');
                 if (data.redirect.focus) {
                     redirectParams.set('focus', data.redirect.focus);
-                }
-                var df = panel.getAttribute('data-date-from') || '';
-                var dt = panel.getAttribute('data-date-to') || '';
-                if (df) {
-                    redirectParams.set('date_from', df);
-                }
-                if (dt) {
-                    redirectParams.set('date_to', dt);
                 }
                 if ((panel.getAttribute('data-refresh') || '') === '1') {
                     redirectParams.set('refresh', '1');
@@ -1611,6 +1632,146 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
     setProgress(2, 'resolve');
     runStep('init', '').catch(function () {
         setProgress(100, 'error');
+    });
+})();
+(function () {
+    var input = document.getElementById('sancus-search-query');
+    var list = document.getElementById('sancus-suggest-list');
+    var company = document.getElementById('sancus-search-company');
+    if (!input || !list) {
+        return;
+    }
+
+    var timer = null;
+    var controller = null;
+    var active = -1;
+
+    function hide() {
+        list.hidden = true;
+        list.innerHTML = '';
+        active = -1;
+    }
+
+    function buttons() {
+        return list.querySelectorAll('button');
+    }
+
+    function setActive(index) {
+        var items = buttons();
+        active = index;
+        for (var i = 0; i < items.length; i++) {
+            items[i].classList.toggle('is-active', i === active);
+        }
+        if (items[active]) {
+            items[active].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function choose(code) {
+        if (!code) {
+            return;
+        }
+        input.value = code;
+        hide();
+        if (input.form) {
+            input.form.requestSubmit();
+        }
+    }
+
+    function render(matches) {
+        list.innerHTML = '';
+        if (!matches || !matches.length) {
+            hide();
+            return;
+        }
+        matches.forEach(function (match) {
+            var item = document.createElement('li');
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = match.name || match.code || '';
+            if (match.code) {
+                var code = document.createElement('span');
+                code.className = 'sancus-suggest-code';
+                code.textContent = match.code;
+                button.appendChild(code);
+            }
+            button.addEventListener('mousedown', function (event) {
+                event.preventDefault();
+            });
+            button.addEventListener('click', function () {
+                choose(match.code || '');
+            });
+            item.appendChild(button);
+            list.appendChild(item);
+        });
+        list.hidden = false;
+        active = -1;
+    }
+
+    function fetchMatches() {
+        var query = input.value.trim();
+        if (query.length < 2 || /^(CT|PRJ)\d/i.test(query)) {
+            hide();
+            return;
+        }
+        if (controller) {
+            controller.abort();
+        }
+        controller = new AbortController();
+        var body = new URLSearchParams();
+        body.set('action', 'salesperson_suggest');
+        body.set('company', company ? company.value : '');
+        body.set('q', query);
+        fetch('index.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
+            body: body.toString(),
+            credentials: 'same-origin',
+            cache: 'no-store',
+            signal: controller.signal
+        }).then(function (response) {
+            return response.json();
+        }).then(function (data) {
+            if (input.value.trim() !== query) {
+                return;
+            }
+            render((data && data.matches) || []);
+        }).catch(function () {});
+    }
+
+    input.addEventListener('input', function () {
+        if (timer) {
+            window.clearTimeout(timer);
+        }
+        timer = window.setTimeout(fetchMatches, 250);
+    });
+    input.addEventListener('keydown', function (event) {
+        var items = buttons();
+        if (list.hidden || !items.length) {
+            return;
+        }
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            setActive(Math.min(items.length - 1, active + 1));
+        } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            setActive(Math.max(0, active - 1));
+        } else if (event.key === 'Enter' && active >= 0 && items[active]) {
+            event.preventDefault();
+            items[active].click();
+        } else if (event.key === 'Escape') {
+            hide();
+        }
+    });
+    document.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!(target instanceof Node)) {
+            return;
+        }
+        if (target === input || list.contains(target)) {
+            return;
+        }
+        hide();
     });
 })();
 </script>

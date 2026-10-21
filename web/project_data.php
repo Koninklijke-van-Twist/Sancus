@@ -17,6 +17,11 @@ const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Line_No,Type,No,Description,Planning_
 const SANCUS_ITEM_SELECT = 'No,Costing_Method';
 const SANCUS_WERKORDER_SELECT = 'No,Main_Entity,Main_Entity_Description,Component_No,Component_Description,Job_No,Task_Code,Task_Description,Start_Date,Status';
 const SANCUS_CONTRACT_SELECT = 'KVT_Total_Sales_Price';
+const SANCUS_SALESPERSON_SELECT = 'Code,Name';
+const SANCUS_CUSTOMER_SALESPERSON_SELECT = 'No,Name,Salesperson_Code';
+const SANCUS_CONTRACT_BY_CUSTOMER_SELECT = 'Contract_No,Customer_No,Name,KVT_Total_Sales_Price';
+const SANCUS_PROJECTEN_BY_SALESPERSON_SELECT = 'KVT_Contract_No,KVT_Sales_Person_Code';
+const SANCUS_PROJECTEN_STATUS_SELECT = 'No,Status,KVT_Contract_No';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
 const SANCUS_NIGHTLY_CACHE_TTL = 90000;
@@ -547,6 +552,641 @@ function project_normalize_project_row(array $row): array
         'status' => project_normalize_job_status((string) ($row['Status'] ?? '')),
         'customer_no' => trim((string) ($row['Bill_to_Customer_No'] ?? '')),
         'customer_name' => trim((string) ($row['LVS_Bill_to_Name'] ?? '')),
+    ];
+}
+
+/**
+ * Live Job Status is Open of Completed. Alleen Completed telt als afgesloten.
+ * project_normalize_job_status (0–3 → Planning/Offerte/Open/Voltooid) wordt hier
+ * niet toegepast, zodat Voltooid of een numerieke code niet als Completed geldt.
+ */
+function project_job_status_is_closed(string $status): bool
+{
+    $status = trim($status);
+    if (function_exists('mb_strtolower')) {
+        $status = mb_strtolower($status, 'UTF-8');
+    } else {
+        $status = strtolower($status);
+    }
+
+    return $status === 'completed';
+}
+
+/**
+ * @param list<mixed> $projects
+ * @return array{closed:int,total:int,percent:int}
+ */
+function project_closed_project_stats(array $projects): array
+{
+    $total = count($projects);
+    $closed = 0;
+    foreach ($projects as $project) {
+        if (!is_array($project)) {
+            continue;
+        }
+        if (project_job_status_is_closed((string) ($project['status'] ?? ''))) {
+            $closed++;
+        }
+    }
+
+    return [
+        'closed' => $closed,
+        'total' => $total,
+        'percent' => $total > 0 ? (int) round(($closed / $total) * 100) : 0,
+    ];
+}
+
+/**
+ * Zelfde totalen als de kaarten op de contractpagina.
+ * $lines horen al door project_apply_unbooked_cost_preference.
+ *
+ * @param list<mixed> $projects
+ * @param list<array<string,mixed>> $lines
+ * @return array{
+ *   project_count:int,
+ *   cost:float,
+ *   revenue:float,
+ *   profit:float,
+ *   profit_pct:?float,
+ *   material_qty:float,
+ *   material_money:float,
+ *   hours_qty:float,
+ *   hours_money:float,
+ *   kilometers_qty:float,
+ *   kilometers_money:float,
+ *   closed:int,
+ *   closed_total:int,
+ *   closed_percent:int
+ * }
+ */
+function project_header_metrics(array $projects, array $lines): array
+{
+    $totals = project_sum_amounts($lines);
+    $byType = project_sum_by_type($lines);
+    $cost = (float) ($totals['cost'] ?? 0);
+    $revenue = (float) ($totals['revenue'] ?? 0);
+    $profit = $revenue - $cost;
+    $closed = project_closed_project_stats($projects);
+    $money = static function (string $type) use ($byType): float {
+        return (float) ($byType[$type]['revenue'] ?? 0) - (float) ($byType[$type]['cost'] ?? 0);
+    };
+
+    return [
+        'project_count' => count($projects),
+        'cost' => $cost,
+        'revenue' => $revenue,
+        'profit' => $profit,
+        'profit_pct' => abs($revenue) >= 0.00001 ? ($profit / $revenue) * 100.0 : null,
+        'material_qty' => (float) ($byType['Materiaal']['quantity'] ?? 0),
+        'material_money' => $money('Materiaal'),
+        'hours_qty' => (float) ($byType['Uren']['quantity'] ?? 0),
+        'hours_money' => $money('Uren'),
+        'kilometers_qty' => (float) ($byType['Kilometers']['quantity'] ?? 0),
+        'kilometers_money' => $money('Kilometers'),
+        'closed' => $closed['closed'],
+        'closed_total' => $closed['total'],
+        'closed_percent' => $closed['percent'],
+    ];
+}
+
+function project_normalize_match_text(string $value): string
+{
+    $value = trim($value);
+    if (function_exists('mb_strtolower')) {
+        return mb_strtolower($value, 'UTF-8');
+    }
+
+    return strtolower($value);
+}
+
+/**
+ * CT…/PRJ… is een contract- of projectnummer. Dan geen verkoperssuggesties.
+ */
+function project_query_is_contract_or_project_number(string $query): bool
+{
+    $query = trim($query);
+    if ($query === '') {
+        return false;
+    }
+    if (preg_match('/(?:^|[^A-Za-z0-9])(CT|PRJ)\d/i', $query) === 1 || preg_match('/^(CT|PRJ)\d/i', $query) === 1) {
+        return true;
+    }
+
+    foreach (project_codes_from_user_input($query) as $code) {
+        if (preg_match('/^(CT|PRJ)\d/i', $code) === 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @param list<array<string,mixed>> $people
+ * @return list<array{code:string,name:string}>
+ */
+function project_match_salespersons(array $people, string $query, int $limit = 8): array
+{
+    $needle = project_normalize_match_text($query);
+    if ($needle === '') {
+        return [];
+    }
+
+    $exact = [];
+    $partial = [];
+    foreach ($people as $person) {
+        if (!is_array($person)) {
+            continue;
+        }
+        $code = trim((string) ($person['code'] ?? ''));
+        $name = trim((string) ($person['name'] ?? ''));
+        if ($code === '') {
+            continue;
+        }
+        $codeKey = project_normalize_match_text($code);
+        $nameKey = project_normalize_match_text($name);
+        $row = ['code' => $code, 'name' => $name];
+        if ($codeKey === $needle || ($nameKey !== '' && $nameKey === $needle)) {
+            $exact[] = $row;
+            continue;
+        }
+        $codeHit = $codeKey !== '' && str_contains($codeKey, $needle);
+        $nameHit = $nameKey !== '' && str_contains($nameKey, $needle);
+        if ($codeHit || $nameHit) {
+            $partial[] = $row;
+        }
+    }
+
+    $chosen = $exact !== [] ? $exact : $partial;
+    usort($chosen, static function (array $a, array $b) use ($needle, $exact): int {
+        if ($exact === []) {
+            $aStart = str_starts_with(project_normalize_match_text($a['name']), $needle)
+                || str_starts_with(project_normalize_match_text($a['code']), $needle);
+            $bStart = str_starts_with(project_normalize_match_text($b['name']), $needle)
+                || str_starts_with(project_normalize_match_text($b['code']), $needle);
+            if ($aStart !== $bStart) {
+                return $aStart ? -1 : 1;
+            }
+        }
+        $byName = strcasecmp($a['name'], $b['name']);
+        if ($byName !== 0) {
+            return $byName;
+        }
+
+        return strcasecmp($a['code'], $b['code']);
+    });
+
+    if ($limit > 0 && count($chosen) > $limit) {
+        return array_slice($chosen, 0, $limit);
+    }
+
+    return $chosen;
+}
+
+/**
+ * @param list<mixed> $values
+ */
+function project_odata_or_eq(string $field, array $values): string
+{
+    $terms = [];
+    $seen = [];
+    foreach ($values as $value) {
+        $value = trim((string) $value);
+        if ($value === '' || strlen($value) > 50 || preg_match('/[\t\r\n]/', $value) === 1) {
+            continue;
+        }
+        $key = function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $terms[] = $field . " eq '" . project_escape_odata_string($value) . "'";
+    }
+    if ($terms === []) {
+        return '';
+    }
+    if (count($terms) === 1) {
+        return $terms[0];
+    }
+
+    return '(' . implode(' or ', $terms) . ')';
+}
+
+/**
+ * @return list<array{code:string,name:string}>
+ */
+function project_fetch_salespersons(string $company, int $ttl = 3600): array
+{
+    $rows = project_fetch_rows($company, 'SalespersonPurchaserCard', [
+        '$select' => SANCUS_SALESPERSON_SELECT,
+    ], $ttl);
+
+    $people = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $code = project_odata_scalar_string($row['Code'] ?? null);
+        if ($code === '') {
+            continue;
+        }
+        $people[] = [
+            'code' => $code,
+            'name' => project_odata_scalar_string($row['Name'] ?? null),
+        ];
+    }
+
+    usort($people, static function (array $a, array $b): int {
+        $left = $a['name'] !== '' ? $a['name'] : $a['code'];
+        $right = $b['name'] !== '' ? $b['name'] : $b['code'];
+        $byName = strcasecmp($left, $right);
+        if ($byName !== 0) {
+            return $byName;
+        }
+
+        return strcasecmp($a['code'], $b['code']);
+    });
+
+    return $people;
+}
+
+/**
+ * @return list<array{code:string,name:string}>
+ */
+function project_find_salespersons(string $company, string $query, int $ttl = 3600, int $limit = 8): array
+{
+    $query = trim($query);
+    if ($query === '' || project_input_is_blob($query)) {
+        return [];
+    }
+
+    return project_match_salespersons(project_fetch_salespersons($company, $ttl), $query, $limit);
+}
+
+/**
+ * @return list<array{no:string,name:string,salesperson_code:string}>
+ */
+function project_fetch_customers_by_salesperson(string $company, string $salespersonCode, int $ttl = 3600): array
+{
+    $salespersonCode = trim($salespersonCode);
+    if ($salespersonCode === '' || preg_match('/[\t\r\n]/', $salespersonCode) === 1) {
+        return [];
+    }
+
+    $rows = project_fetch_rows($company, 'AppCustomerCard', [
+        '$select' => SANCUS_CUSTOMER_SALESPERSON_SELECT,
+        '$filter' => "Salesperson_Code eq '" . project_escape_odata_string($salespersonCode) . "'",
+    ], $ttl);
+
+    $customers = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $no = project_odata_scalar_string($row['No'] ?? null);
+        if ($no === '') {
+            continue;
+        }
+        $customers[] = [
+            'no' => $no,
+            'name' => project_odata_scalar_string($row['Name'] ?? null),
+            'salesperson_code' => project_odata_scalar_string($row['Salesperson_Code'] ?? null),
+        ];
+    }
+
+    return $customers;
+}
+
+/**
+ * @param list<string> $customerNos
+ * @return list<array{contract_no:string,customer_no:string,customer_name:string,contract_value:?float}>
+ */
+function project_fetch_contracts_by_customer_nos(string $company, array $customerNos, int $ttl = 3600): array
+{
+    $chunks = array_chunk(array_values($customerNos), max(1, SANCUS_JOB_FILTER_CHUNK));
+    $contracts = [];
+    $seen = [];
+    foreach ($chunks as $chunk) {
+        $filter = project_odata_or_eq('Customer_No', $chunk);
+        if ($filter === '') {
+            continue;
+        }
+        $rows = project_fetch_rows($company, 'AppMaintenanceContracts', [
+            '$select' => SANCUS_CONTRACT_BY_CUSTOMER_SELECT,
+            '$filter' => $filter,
+        ], $ttl);
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $contractNo = project_odata_scalar_string($row['Contract_No'] ?? null);
+            if ($contractNo === '' || isset($seen[$contractNo])) {
+                continue;
+            }
+            $seen[$contractNo] = true;
+            $value = null;
+            if (array_key_exists('KVT_Total_Sales_Price', $row)) {
+                $value = project_odata_scalar_float($row['KVT_Total_Sales_Price']);
+            }
+            $contracts[] = [
+                'contract_no' => $contractNo,
+                'customer_no' => project_odata_scalar_string($row['Customer_No'] ?? null),
+                'customer_name' => project_odata_scalar_string($row['Name'] ?? null),
+                'contract_value' => $value,
+            ];
+        }
+    }
+
+    usort($contracts, static function (array $a, array $b): int {
+        return strnatcasecmp($b['contract_no'], $a['contract_no']);
+    });
+
+    return $contracts;
+}
+
+/**
+ * Projecten van een contract voor de kaart % afgesloten.
+ * Bron is entity Projecten (AppProjecten mist open projecten). Ontbrekende
+ * nummers uit $fallbackProjects worden aangevuld. Status van Projecten wint.
+ *
+ * @param list<array<string,mixed>> $projectenRows
+ * @param list<array<string,mixed>> $fallbackProjects
+ * @return list<array{no:string,status:string}>
+ */
+function project_merge_projects_for_closed_stats(array $projectenRows, array $fallbackProjects): array
+{
+    $byNo = [];
+    $order = [];
+    foreach ($projectenRows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $no = project_odata_scalar_string($row['No'] ?? ($row['no'] ?? null));
+        if ($no === '') {
+            continue;
+        }
+        $key = project_normalize_match_text($no);
+        if (!isset($byNo[$key])) {
+            $order[] = $key;
+        }
+        if (array_key_exists('Status', $row)) {
+            $status = project_odata_scalar_string($row['Status']);
+        } else {
+            $status = trim((string) ($row['status'] ?? ''));
+        }
+        $byNo[$key] = [
+            'no' => $no,
+            'status' => $status,
+        ];
+    }
+
+    foreach ($fallbackProjects as $project) {
+        if (!is_array($project)) {
+            continue;
+        }
+        $no = trim((string) ($project['no'] ?? ''));
+        if ($no === '') {
+            continue;
+        }
+        $key = project_normalize_match_text($no);
+        if (isset($byNo[$key])) {
+            continue;
+        }
+        $order[] = $key;
+        $byNo[$key] = [
+            'no' => $no,
+            'status' => trim((string) ($project['status'] ?? '')),
+        ];
+    }
+
+    $merged = [];
+    foreach ($order as $key) {
+        $merged[] = $byNo[$key];
+    }
+
+    return $merged;
+}
+
+/**
+ * @param list<array<string,mixed>> $fallbackProjects genormaliseerde AppProjecten
+ * @return list<array{no:string,status:string}>
+ */
+function project_projects_for_closed_card(string $company, string $contractNo, array $fallbackProjects, int $ttl = 3600): array
+{
+    $contractNo = trim($contractNo);
+    $fromProjecten = [];
+    if (project_is_bc_code($contractNo)) {
+        $fromProjecten = project_try_fetch_rows($company, 'Projecten', [
+            '$select' => SANCUS_PROJECTEN_STATUS_SELECT,
+            '$filter' => "KVT_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
+        ], $ttl);
+    }
+
+    return project_merge_projects_for_closed_stats($fromProjecten, $fallbackProjects);
+}
+
+/**
+ * Contractnummers van een verkoper via Projecten.KVT_Sales_Person_Code.
+ * Het contractnummer is Projecten.KVT_Contract_No, hetzelfde veld als op AppProjecten.
+ *
+ * @return list<string>
+ */
+function project_fetch_contract_nos_for_salesperson(string $company, string $salespersonCode, int $ttl = 3600): array
+{
+    $salespersonCode = trim($salespersonCode);
+    if ($salespersonCode === '' || preg_match('/[\t\r\n]/', $salespersonCode) === 1) {
+        return [];
+    }
+
+    $rows = project_try_fetch_rows($company, 'Projecten', [
+        '$select' => SANCUS_PROJECTEN_BY_SALESPERSON_SELECT,
+        '$filter' => "KVT_Sales_Person_Code eq '" . project_escape_odata_string($salespersonCode) . "'",
+    ], $ttl);
+
+    $contractNos = [];
+    $seen = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contractNo = project_odata_scalar_string($row['KVT_Contract_No'] ?? null);
+        if ($contractNo === '' || !project_is_bc_code($contractNo)) {
+            continue;
+        }
+        $key = project_normalize_match_text($contractNo);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $contractNos[] = $contractNo;
+    }
+
+    return $contractNos;
+}
+
+/**
+ * Primair de contracten uit Projecten, daarna klantkaarten die nog ontbraken.
+ * Bestaande rijen houden hun contractnummer; lege klantgegevens worden aangevuld.
+ *
+ * @param list<string> $contractNosFromProjects
+ * @param list<array{contract_no:string,customer_no:string,customer_name:string,contract_value:?float}> $contractsFromCustomers
+ * @return list<array{contract_no:string,customer_no:string,customer_name:string,contract_value:?float}>
+ */
+function project_merge_salesperson_contracts(array $contractNosFromProjects, array $contractsFromCustomers): array
+{
+    $map = [];
+    $order = [];
+    $remember = static function (array $contract) use (&$map, &$order): void {
+        $contractNo = trim((string) ($contract['contract_no'] ?? ''));
+        if ($contractNo === '' || !project_is_bc_code($contractNo)) {
+            return;
+        }
+        $key = project_normalize_match_text($contractNo);
+        if (!isset($map[$key])) {
+            $order[] = $key;
+            $map[$key] = [
+                'contract_no' => $contractNo,
+                'customer_no' => trim((string) ($contract['customer_no'] ?? '')),
+                'customer_name' => trim((string) ($contract['customer_name'] ?? '')),
+                'contract_value' => $contract['contract_value'] ?? null,
+            ];
+
+            return;
+        }
+        if ($map[$key]['customer_no'] === '' && trim((string) ($contract['customer_no'] ?? '')) !== '') {
+            $map[$key]['customer_no'] = trim((string) $contract['customer_no']);
+        }
+        if ($map[$key]['customer_name'] === '' && trim((string) ($contract['customer_name'] ?? '')) !== '') {
+            $map[$key]['customer_name'] = trim((string) $contract['customer_name']);
+        }
+        if ($map[$key]['contract_value'] === null && array_key_exists('contract_value', $contract) && $contract['contract_value'] !== null) {
+            $map[$key]['contract_value'] = $contract['contract_value'];
+        }
+    };
+
+    foreach ($contractNosFromProjects as $contractNo) {
+        $remember([
+            'contract_no' => (string) $contractNo,
+            'customer_no' => '',
+            'customer_name' => '',
+            'contract_value' => null,
+        ]);
+    }
+    foreach ($contractsFromCustomers as $contract) {
+        if (is_array($contract)) {
+            $remember($contract);
+        }
+    }
+
+    $contracts = [];
+    foreach ($order as $key) {
+        $contracts[] = $map[$key];
+    }
+    usort($contracts, static function (array $a, array $b): int {
+        return strnatcasecmp($b['contract_no'], $a['contract_no']);
+    });
+
+    return $contracts;
+}
+
+/**
+ * Eén rij per contract van een verkoper, met dezelfde totalen als de kaarten.
+ *
+ * @return array{
+ *   found:bool,
+ *   salesperson:array{code:string,name:string},
+ *   rows:list<array<string,mixed>>
+ * }
+ */
+function project_salesperson_contract_rows(
+    string $company,
+    string $salespersonCode,
+    string $dateFrom = '',
+    int $ttl = 3600,
+    bool $includeUnbookedCosts = false
+): array {
+    $salespersonCode = trim($salespersonCode);
+    $people = project_fetch_salespersons($company, $ttl);
+    $person = null;
+    foreach ($people as $candidate) {
+        if (strcasecmp($candidate['code'], $salespersonCode) === 0) {
+            $person = $candidate;
+            break;
+        }
+    }
+    if ($person === null) {
+        return [
+            'found' => false,
+            'salesperson' => ['code' => $salespersonCode, 'name' => ''],
+            'rows' => [],
+        ];
+    }
+
+    $contractNos = project_fetch_contract_nos_for_salesperson($company, $person['code'], $ttl);
+    $customerContracts = [];
+    try {
+        $customers = project_fetch_customers_by_salesperson($company, $person['code'], $ttl);
+        $customerNos = [];
+        foreach ($customers as $customer) {
+            $customerNos[] = $customer['no'];
+        }
+        $customerContracts = project_fetch_contracts_by_customer_nos($company, $customerNos, $ttl);
+    } catch (Throwable $customerError) {
+        $customerMessage = $customerError->getMessage();
+        if (strlen($customerMessage) > 500) {
+            $customerMessage = substr($customerMessage, 0, 500) . '…';
+        }
+        error_log('[Sancus] verkoper-terugval via klant mislukt: ' . $customerMessage);
+    }
+    $contracts = project_merge_salesperson_contracts($contractNos, $customerContracts);
+    $rows = [];
+    foreach ($contracts as $contract) {
+        $contractNo = (string) $contract['contract_no'];
+        try {
+            $overview = project_fetch_contract_overview(
+                $company,
+                $contractNo,
+                $dateFrom,
+                '',
+                $ttl,
+                null,
+                $includeUnbookedCosts
+            );
+            $projects = is_array($overview['projects'] ?? null) ? $overview['projects'] : [];
+            $lines = is_array($overview['lines'] ?? null) ? $overview['lines'] : [];
+            $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
+            $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, $ttl);
+            $customerName = trim((string) ($overview['customer_name'] ?? ''));
+            $customerNo = trim((string) ($overview['customer_no'] ?? ''));
+            $rows[] = [
+                'contract_no' => $contractNo,
+                'customer_name' => $customerName !== '' ? $customerName : (string) $contract['customer_name'],
+                'customer_no' => $customerNo !== '' ? $customerNo : (string) $contract['customer_no'],
+                'contract_value' => $overview['contract_value'] ?? $contract['contract_value'],
+                'metrics' => project_header_metrics($countProjects, $lines),
+                'load_error' => false,
+            ];
+        } catch (Throwable $error) {
+            $message = $error->getMessage();
+            if (strlen($message) > 500) {
+                $message = substr($message, 0, 500) . '…';
+            }
+            error_log('[Sancus] contract ' . $contractNo . ' voor verkoper mislukt: ' . $message);
+            $rows[] = [
+                'contract_no' => $contractNo,
+                'customer_name' => (string) $contract['customer_name'],
+                'customer_no' => (string) $contract['customer_no'],
+                'contract_value' => $contract['contract_value'],
+                'metrics' => null,
+                'load_error' => true,
+            ];
+        }
+    }
+
+    return [
+        'found' => true,
+        'salesperson' => $person,
+        'rows' => $rows,
     ];
 }
 

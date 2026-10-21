@@ -321,6 +321,29 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
 
         $resolved = project_load_resolve_search($company, $query, $ttl);
         if ($resolved === null) {
+            $matches = project_find_salespersons($company, $query, $ttl, 20);
+            if (count($matches) === 1) {
+                return [
+                    'ok' => true,
+                    'done' => true,
+                    'redirect_salesperson' => [
+                        'code' => $matches[0]['code'],
+                        'name' => $matches[0]['name'],
+                    ],
+                    'progress' => 100,
+                    'label' => 'redirect',
+                ];
+            }
+            if (count($matches) > 1) {
+                return [
+                    'ok' => true,
+                    'done' => true,
+                    'salesperson_matches' => $matches,
+                    'progress' => 100,
+                    'label' => 'salesperson_choose',
+                ];
+            }
+
             return [
                 'ok' => false,
                 'done' => true,
