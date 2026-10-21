@@ -146,8 +146,34 @@ function portal_group_cell(
 
 // Progressive load API (chunked OData)
 if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store');
+    $step = trim((string) ($_REQUEST['step'] ?? 'init'));
+    $wantsStream = $step === 'init'
+        && in_array(strtolower(trim((string) ($_REQUEST['stream'] ?? ''))), ['1', 'true', 'yes'], true)
+        && !in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
+    if ($wantsStream) {
+        @ini_set('zlib.output_compression', '0');
+        @ini_set('implicit_flush', '1');
+        header('Content-Type: application/x-ndjson; charset=utf-8');
+        header('Cache-Control: no-store');
+        header('X-Accel-Buffering: no');
+        while (ob_get_level() > 0) {
+            ob_end_flush();
+        }
+        project_set_load_progress_handler(static function (int $percent, string $label, array $meta): void {
+            echo json_encode([
+                'event' => 'progress',
+                'ok' => true,
+                'done' => false,
+                'progress' => $percent,
+                'label' => $label,
+                'meta' => $meta,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+            flush();
+        });
+    } else {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+    }
 
     $stepCompany = trim((string) ($_REQUEST['company'] ?? ''));
     if ($stepCompany !== '') {
@@ -157,7 +183,6 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
         }
     }
 
-    $step = trim((string) ($_REQUEST['step'] ?? 'init'));
     $loadId = trim((string) ($_REQUEST['load_id'] ?? ''));
     $stepEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
     $stepPrefs = $stepEmail !== '' ? loadUserPrefs($stepEmail) : [];
@@ -171,7 +196,10 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'force_refresh' => in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true),
             'include_unbooked_costs' => !empty($stepPrefs['include_unbooked_costs']),
         ]);
-        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . ($wantsStream ? "\n" : '');
+        if ($wantsStream) {
+            flush();
+        }
     } catch (Throwable $loadStepError) {
         $loadStepMessage = $loadStepError->getMessage();
         if (strlen($loadStepMessage) > 500) {
@@ -194,7 +222,10 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'message' => $loadStepError->getMessage(),
             'progress' => 100,
             'label' => 'error',
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . ($wantsStream ? "\n" : '');
+        if ($wantsStream) {
+            flush();
+        }
     }
     exit;
 }
@@ -345,7 +376,11 @@ try {
                     project_set_force_refresh(true);
                 }
                 try {
-                    $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
+                    if (is_array($overview['count_projects'] ?? null)) {
+                        $countProjects = $overview['count_projects'];
+                    } else {
+                        $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
+                    }
                 } finally {
                     if ($forceRefresh) {
                         project_set_force_refresh(false);
@@ -1497,7 +1532,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         redirect: <?= json_encode(LOC('sancus.progress.resolve'), JSON_UNESCAPED_UNICODE) ?>
     };
 
-    function setProgress(pct, labelKey) {
+    function setProgress(pct, labelKey, meta) {
         var value = Math.max(0, Math.min(100, Number(pct) || 0));
         if (bar) {
             bar.style.width = value + '%';
@@ -1506,7 +1541,13 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             pctEl.textContent = Math.round(value) + '%';
         }
         if (labelEl) {
-            labelEl.textContent = labels[labelKey] || labels.resolve;
+            var text = labels[labelKey] || labels.resolve;
+            var total = meta ? Number(meta.job_total) : 0;
+            if (total > 0) {
+                var done = Math.max(0, Number(meta.done_jobs) || 0);
+                text += ' (' + done + '/' + total + ')';
+            }
+            labelEl.textContent = text;
         }
     }
 
@@ -1541,21 +1582,17 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             body.set('refresh', '1');
         }
 
-        return fetch('index.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
-            body: body.toString(),
-            credentials: 'same-origin',
-            cache: 'no-store'
-        }).then(function (response) {
-            return response.json();
-        }).then(function (data) {
+        if (step === 'init' && (panel.getAttribute('data-refresh') || '') !== '1') {
+            body.set('stream', '1');
+        }
+
+        function applyStep(data) {
             if (!data || data.ok === false) {
                 setProgress(100, data && data.error ? data.error : 'error');
                 throw new Error((data && data.error) || 'load_failed');
             }
 
-            setProgress(data.progress || 0, data.label || 'resolve');
+            setProgress(data.progress || 0, data.label || 'resolve', data.meta || null);
 
             function pageParams() {
                 var params = new URLSearchParams();
@@ -1626,6 +1663,60 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             }
 
             return runStep(data.next || 'assemble', data.load_id || loadId);
+        }
+
+        function readNdjson(response) {
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+            var last = null;
+            function pump() {
+                return reader.read().then(function (chunk) {
+                    if (chunk.done) {
+                        if (buffer.trim() !== '') {
+                            last = JSON.parse(buffer);
+                        }
+                        if (!last) {
+                            throw new Error('load_failed');
+                        }
+                        return applyStep(last);
+                    }
+                    buffer += decoder.decode(chunk.value, { stream: true });
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i].trim();
+                        if (line === '') {
+                            continue;
+                        }
+                        var data = JSON.parse(line);
+                        if (data && data.event === 'progress') {
+                            setProgress(data.progress || 0, data.label || 'resolve', data.meta || null);
+                            continue;
+                        }
+                        last = data;
+                    }
+                    if (last && last.done) {
+                        return applyStep(last);
+                    }
+                    return pump();
+                });
+            }
+            return pump();
+        }
+
+        return fetch('index.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/x-ndjson, application/json' },
+            body: body.toString(),
+            credentials: 'same-origin',
+            cache: 'no-store'
+        }).then(function (response) {
+            var type = response.headers.get('Content-Type') || '';
+            if (type.indexOf('ndjson') !== -1 && response.body && typeof response.body.getReader === 'function') {
+                return readNdjson(response);
+            }
+            return response.json().then(applyStep);
         });
     }
 

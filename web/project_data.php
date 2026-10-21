@@ -28,8 +28,9 @@ const SANCUS_NIGHTLY_CACHE_TTL = 90000;
 const SANCUS_HOURLY_SEARCH_MAX_AGE = 259200;
 const SANCUS_NIGHTLY_SEARCH_MAX_AGE = 2592000;
 const SANCUS_SEARCH_HISTORY_MAX_AGE = SANCUS_NIGHTLY_SEARCH_MAX_AGE;
-const SANCUS_LOAD_JOB_CHUNK = 2;
 const SANCUS_JOB_FILTER_CHUNK = 40;
+// Zelfde bundel als het OData-filter, zodat verversen niet per twee projecten een call doet.
+const SANCUS_LOAD_JOB_CHUNK = SANCUS_JOB_FILTER_CHUNK;
 
 /**
  * Functies
@@ -208,6 +209,36 @@ function project_set_force_refresh(bool $enabled): void
     $GLOBALS['SANCUS_FORCE_REFRESH'] = $enabled;
 }
 
+function project_set_load_progress_handler(?callable $handler): void
+{
+    $GLOBALS['SANCUS_LOAD_PROGRESS_HANDLER'] = $handler;
+}
+
+function project_reset_load_progress(): void
+{
+    $GLOBALS['SANCUS_LOAD_PROGRESS_PCT'] = -1;
+}
+
+/**
+ * @param array<string,mixed> $meta
+ */
+function project_report_load_progress(int $percent, string $label, array $meta = []): void
+{
+    $percent = max(0, min(100, $percent));
+    $last = $GLOBALS['SANCUS_LOAD_PROGRESS_PCT'] ?? -1;
+    if (!is_int($last)) {
+        $last = -1;
+    }
+    if ($percent < $last) {
+        return;
+    }
+    $GLOBALS['SANCUS_LOAD_PROGRESS_PCT'] = $percent;
+    $handler = $GLOBALS['SANCUS_LOAD_PROGRESS_HANDLER'] ?? null;
+    if (is_callable($handler)) {
+        $handler($percent, $label, $meta);
+    }
+}
+
 function project_is_force_refresh(): bool
 {
     return !empty($GLOBALS['SANCUS_FORCE_REFRESH']);
@@ -308,9 +339,10 @@ function project_try_fetch_rows(string $company, string $entitySet, array $query
  * Zonder Mímir, bij één call of na een fout: null. De caller gebruikt dan het bestaande pad.
  *
  * @param array<string,array{entity:string,query:array<string,mixed>}> $calls
+ * @param callable(string,int,int):void|null $onEach label, afgeronde calls, totaal
  * @return array<string,list<array<string,mixed>>>|null
  */
-function project_fetch_rows_parallel(string $company, array $calls, int $ttl = 3600): ?array
+function project_fetch_rows_parallel(string $company, array $calls, int $ttl = 3600, ?callable $onEach = null): ?array
 {
     if (count($calls) < 2) {
         return null;
@@ -339,7 +371,9 @@ function project_fetch_rows_parallel(string $company, array $calls, int $ttl = 3
     }
 
     try {
-        $lists = odata_mimir_query_many($ordered);
+        $lists = odata_mimir_query_many($ordered, $onEach === null ? null : static function (int $done, int $total, int $index) use ($labels, $onEach): void {
+            $onEach((string) ($labels[$index] ?? ''), $done, $total);
+        });
     } catch (Throwable $error) {
         $message = $error->getMessage();
         if (strlen($message) > 500) {
@@ -414,6 +448,41 @@ function project_rows_for_jobs(array $rows, array $jobNos): array
     foreach ($order as $jobNo) {
         foreach ($byJob[$jobNo] as $row) {
             $flat[] = $row;
+        }
+    }
+
+    return $flat;
+}
+
+/**
+ * Genormaliseerde regels in de volgorde van de eerste Job_No, niet de gesorteerde bundel.
+ *
+ * @param list<array<string,mixed>> $lines
+ * @param list<string> $jobNos
+ * @return list<array<string,mixed>>
+ */
+function project_normalized_lines_for_jobs(array $lines, array $jobNos): array
+{
+    $order = project_unique_job_nos($jobNos);
+    $byJob = [];
+    foreach ($order as $jobNo) {
+        $byJob[$jobNo] = [];
+    }
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+        $job = trim((string) ($line['job_no'] ?? ''));
+        if ($job === '' || !isset($byJob[$job])) {
+            continue;
+        }
+        $byJob[$job][] = $line;
+    }
+
+    $flat = [];
+    foreach ($order as $jobNo) {
+        foreach ($byJob[$jobNo] as $line) {
+            $flat[] = $line;
         }
     }
 
@@ -1155,7 +1224,11 @@ function project_salesperson_contract_rows(
             $projects = is_array($overview['projects'] ?? null) ? $overview['projects'] : [];
             $lines = is_array($overview['lines'] ?? null) ? $overview['lines'] : [];
             $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
-            $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, $ttl);
+            if (is_array($overview['count_projects'] ?? null)) {
+                $countProjects = $overview['count_projects'];
+            } else {
+                $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, $ttl);
+            }
             $customerName = trim((string) ($overview['customer_name'] ?? ''));
             $customerNo = trim((string) ($overview['customer_no'] ?? ''));
             $rows[] = [
@@ -2667,33 +2740,66 @@ function project_prefetched_projects(?array $prefetch): ?array
     ];
 }
 
+function project_sources_percent(int $doneUnits, int $totalUnits): int
+{
+    if ($totalUnits < 1) {
+        return 92;
+    }
+    $ratio = $doneUnits / $totalUnits;
+    if ($ratio < 0) {
+        $ratio = 0.0;
+    } elseif ($ratio > 1) {
+        $ratio = 1.0;
+    }
+
+    return min(92, 8 + (int) round(84 * $ratio));
+}
+
+function project_sources_progress_label(string $kind, int $doneJobs = 0, int $jobTotal = 0): string
+{
+    if ($kind === 'jobs') {
+        return 'job_planning';
+    }
+    if ($kind === 'planning') {
+        return 'contract_planning';
+    }
+    if ($kind === 'projecten' && $jobTotal > 0 && $doneJobs >= $jobTotal) {
+        return 'posten_done';
+    }
+
+    return 'posten';
+}
+
 /**
- * Posten, contractplanning en (optioneel) ongeboekte planningsregels.
- * Bij Mímir lopen die calls naast elkaar; anders het bestaande pad.
- * Uitgezet door de gebruiker slaat Job_Planning_Lines over. De regels komen
- * dan niet in het overzicht (zelfde scherm als de voorkeur uit) en nightly
- * vult de cache alsnog.
+ * Alle onafhankelijke bron-calls van een contract, inclusief elke job-bundel.
+ * Eén project per bundel mag mee: anders wacht die call tot na de parallelle golf.
  *
  * @param list<string> $jobNos
- * @return array{posten:list<array<string,mixed>>,planning:list<array<string,mixed>>,job_planning:list<array<string,mixed>>}
+ * @return list<array{key:string,kind:string,weight:int,jobs:list<string>,entity:string,query:array<string,mixed>}>
  */
-function project_load_contract_sources(
-    string $company,
+function project_contract_source_plan(
     string $contractNo,
     array $jobNos,
     string $dateFrom,
     string $dateTo,
-    int $ttl,
     bool $includeUnbookedCosts
 ): array {
-    $parallelCalls = [];
-    $postenFilter = project_parallel_job_filter($jobNos, '', 'Posting_Date', $dateFrom, $dateTo);
-    if ($postenFilter !== null) {
-        $parallelCalls['posten'] = [
+    $plan = [];
+    $chunks = project_job_filter_chunks($jobNos);
+    foreach ($chunks as $index => $chunk) {
+        $filter = project_job_chunk_filter($chunk, '', 'Posting_Date', $dateFrom, $dateTo);
+        if ($filter === '') {
+            continue;
+        }
+        $plan[] = [
+            'key' => 'posten_' . $index,
+            'kind' => 'posten',
+            'weight' => count($chunk),
+            'jobs' => $chunk,
             'entity' => 'ProjectPosten',
             'query' => [
                 '$select' => SANCUS_POSTEN_SELECT,
-                '$filter' => $postenFilter,
+                '$filter' => $filter,
                 '$orderby' => 'Entry_No asc',
             ],
         ];
@@ -2701,7 +2807,11 @@ function project_load_contract_sources(
 
     $escapedContract = project_escape_odata_string($contractNo);
     if ($escapedContract !== '') {
-        $parallelCalls['planning'] = [
+        $plan[] = [
+            'key' => 'planning',
+            'kind' => 'planning',
+            'weight' => 1,
+            'jobs' => [],
             'entity' => 'ContractPlanningsregels',
             'query' => [
                 '$select' => SANCUS_PLANNING_SELECT,
@@ -2717,53 +2827,208 @@ function project_load_contract_sources(
     }
 
     if ($includeUnbookedCosts) {
-        $jobFilter = project_parallel_job_filter(
-            $jobNos,
-            'Qty_to_Transfer_to_Journal ne 0',
-            'Planning_Date',
-            $dateFrom,
-            $dateTo
-        );
-        if ($jobFilter !== null) {
-            $parallelCalls['jobs'] = [
+        foreach ($chunks as $index => $chunk) {
+            $filter = project_job_chunk_filter(
+                $chunk,
+                'Qty_to_Transfer_to_Journal ne 0',
+                'Planning_Date',
+                $dateFrom,
+                $dateTo
+            );
+            if ($filter === '') {
+                continue;
+            }
+            $plan[] = [
+                'key' => 'jobs_' . $index,
+                'kind' => 'jobs',
+                'weight' => count($chunk),
+                'jobs' => $chunk,
                 'entity' => 'Job_Planning_Lines',
                 'query' => [
                     '$select' => SANCUS_JOB_PLANNING_SELECT,
-                    '$filter' => $jobFilter,
+                    '$filter' => $filter,
                     '$orderby' => 'Line_No asc',
                 ],
             ];
         }
     }
 
-    $parallel = project_fetch_rows_parallel($company, $parallelCalls, $ttl);
-
-    if (is_array($parallel) && isset($parallel['posten'])) {
-        $posten = project_posten_from_raw_rows($parallel['posten'], $jobNos);
-    } else {
-        $posten = project_fetch_posten_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    if (project_is_bc_code($contractNo)) {
+        $plan[] = [
+            'key' => 'projecten',
+            'kind' => 'projecten',
+            'weight' => 1,
+            'jobs' => [],
+            'entity' => 'Projecten',
+            'query' => [
+                '$select' => SANCUS_PROJECTEN_STATUS_SELECT,
+                '$filter' => "KVT_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
+            ],
+        ];
     }
 
-    if (is_array($parallel) && isset($parallel['planning'])) {
-        $planning = project_planning_lines_from_rows($parallel['planning']);
-    } elseif ($escapedContract === '') {
-        $planning = [];
-    } else {
-        $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
+    return $plan;
+}
+
+/**
+ * Posten, contractplanning, Projecten-telling en (optioneel) ongeboekte planningsregels.
+ * Bij Mímir gaan alle bundels in één golf; anders het bestaande pad per bundel.
+ * Uitgezet door de gebruiker slaat Job_Planning_Lines over. De regels komen
+ * dan niet in het overzicht (zelfde scherm als de voorkeur uit) en nightly
+ * vult de cache alsnog.
+ *
+ * @param list<string> $jobNos
+ * @return array{posten:list<array<string,mixed>>,planning:list<array<string,mixed>>,job_planning:list<array<string,mixed>>,projecten_rows:list<array<string,mixed>>}
+ */
+function project_load_contract_sources(
+    string $company,
+    string $contractNo,
+    array $jobNos,
+    string $dateFrom,
+    string $dateTo,
+    int $ttl,
+    bool $includeUnbookedCosts
+): array {
+    $plan = project_contract_source_plan($contractNo, $jobNos, $dateFrom, $dateTo, $includeUnbookedCosts);
+    $jobTotal = count(project_unique_job_nos($jobNos));
+    $totalUnits = 0;
+    foreach ($plan as $item) {
+        $totalUnits += (int) $item['weight'];
+    }
+    if ($plan === []) {
+        project_report_load_progress(92, 'posten_done', [
+            'done_jobs' => 0,
+            'job_total' => $jobTotal,
+        ]);
+
+        return [
+            'posten' => [],
+            'planning' => [],
+            'job_planning' => [],
+            'projecten_rows' => [],
+        ];
+    }
+    if ($totalUnits < 1) {
+        $totalUnits = 1;
     }
 
-    if (!$includeUnbookedCosts) {
-        $jobPlanning = [];
-    } elseif (is_array($parallel) && isset($parallel['jobs'])) {
-        $jobPlanning = project_rows_for_jobs($parallel['jobs'], $jobNos);
-    } else {
-        $jobPlanning = project_fetch_job_planning_for_jobs($company, $jobNos, $dateFrom, $dateTo, $ttl);
+    $byKey = [];
+    $calls = [];
+    foreach ($plan as $item) {
+        $byKey[$item['key']] = $item;
+        $calls[$item['key']] = [
+            'entity' => $item['entity'],
+            'query' => $item['query'],
+        ];
+    }
+
+    $doneUnits = 0;
+    $doneJobs = 0;
+    $note = static function (string $kind, int $weight) use (&$doneUnits, &$doneJobs, $totalUnits, $jobTotal): void {
+        $doneUnits += $weight;
+        if ($kind === 'posten') {
+            $doneJobs += $weight;
+        }
+        $shownJobs = min($jobTotal, $doneJobs);
+        project_report_load_progress(
+            project_sources_percent($doneUnits, $totalUnits),
+            project_sources_progress_label($kind, $shownJobs, $jobTotal),
+            [
+                'done_jobs' => $shownJobs,
+                'job_total' => $jobTotal,
+            ]
+        );
+    };
+
+    $parallel = project_fetch_rows_parallel(
+        $company,
+        $calls,
+        $ttl,
+        static function (string $key) use ($byKey, $note): void {
+            $item = $byKey[$key] ?? null;
+            if (!is_array($item)) {
+                return;
+            }
+            $note((string) $item['kind'], (int) $item['weight']);
+        }
+    );
+
+    if (!is_array($parallel)) {
+        $doneUnits = 0;
+        $doneJobs = 0;
+    }
+
+    if (is_array($parallel)) {
+        $rawPosten = [];
+        $rawJobs = [];
+        $planningRows = [];
+        $projectenRows = [];
+        foreach ($plan as $item) {
+            $rows = $parallel[$item['key']] ?? [];
+            if (!is_array($rows)) {
+                $rows = [];
+            }
+            if ($item['kind'] === 'posten') {
+                foreach ($rows as $row) {
+                    if (is_array($row)) {
+                        $rawPosten[] = $row;
+                    }
+                }
+            } elseif ($item['kind'] === 'jobs') {
+                foreach ($rows as $row) {
+                    if (is_array($row)) {
+                        $rawJobs[] = $row;
+                    }
+                }
+            } elseif ($item['kind'] === 'planning') {
+                $planningRows = $rows;
+            } elseif ($item['kind'] === 'projecten') {
+                $projectenRows = $rows;
+            }
+        }
+        if ($doneUnits < $totalUnits) {
+            project_report_load_progress(92, 'posten_done', [
+                'done_jobs' => $jobTotal,
+                'job_total' => $jobTotal,
+            ]);
+        }
+
+        return [
+            'posten' => project_posten_from_raw_rows($rawPosten, $jobNos),
+            'planning' => project_planning_lines_from_rows($planningRows),
+            'job_planning' => project_rows_for_jobs($rawJobs, $jobNos),
+            'projecten_rows' => $projectenRows,
+        ];
+    }
+
+    $posten = [];
+    $planning = [];
+    $rawJobs = [];
+    $projectenRows = [];
+    foreach ($plan as $item) {
+        if ($item['kind'] === 'posten') {
+            $posten = array_merge(
+                $posten,
+                project_fetch_posten_for_jobs($company, $item['jobs'], $dateFrom, $dateTo, $ttl)
+            );
+        } elseif ($item['kind'] === 'planning') {
+            $planning = project_fetch_planning_for_contract($company, $contractNo, $dateFrom, $dateTo, $ttl);
+        } elseif ($item['kind'] === 'jobs') {
+            $rawJobs = array_merge(
+                $rawJobs,
+                project_fetch_job_planning_for_jobs($company, $item['jobs'], $dateFrom, $dateTo, $ttl)
+            );
+        } elseif ($item['kind'] === 'projecten') {
+            $projectenRows = project_try_fetch_rows($company, 'Projecten', $item['query'], $ttl);
+        }
+        $note((string) $item['kind'], (int) $item['weight']);
     }
 
     return [
-        'posten' => $posten,
+        'posten' => project_normalized_lines_for_jobs($posten, $jobNos),
         'planning' => $planning,
-        'job_planning' => $jobPlanning,
+        'job_planning' => project_rows_for_jobs($rawJobs, $jobNos),
+        'projecten_rows' => $projectenRows,
     ];
 }
 
@@ -2813,6 +3078,10 @@ function project_fetch_contract_overview(
     $posten = $loaded['posten'];
     $planning = $loaded['planning'];
     $jobPlanning = $loaded['job_planning'];
+    $projectenRows = is_array($loaded['projecten_rows'] ?? null) ? $loaded['projecten_rows'] : null;
+    $countProjects = $projectenRows === null
+        ? project_projects_for_closed_card($company, $contractNo, $projects, $ttl)
+        : project_merge_projects_for_closed_stats($projectenRows, $projects);
     $unbookedCostLines = project_normalize_unbooked_cost_lines($company, $jobPlanning, $ttl);
     $lines = project_supplement_unbooked_workorders(
         array_merge($posten, $planning, $unbookedCostLines),
@@ -2853,6 +3122,7 @@ function project_fetch_contract_overview(
         'customer_no' => $customerNo,
         'contract_value' => $contractValue,
         'contract_no' => $contractNo,
+        'count_projects' => $countProjects,
     ];
 }
 

@@ -301,6 +301,7 @@ function project_load_resolve_one(
 function project_load_run_step(string $loadId, string $step, array $params = []): array
 {
     @set_time_limit($step === 'job_planning' || $step === 'assemble' ? 180 : 90);
+    project_reset_load_progress();
 
     if ($step === 'init') {
         $company = trim((string) ($params['company'] ?? ''));
@@ -382,6 +383,12 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
 
         // Normale load (geen ↻): één request i.p.v. tientallen chunk-rondes.
         // Bij warme disk-cache is round-trip-overhead de bottleneck, niet BC.
+        // stream=1 schrijft tussentijds NDJSON zodat de balk meeloopt met de batches.
+        $resolvedJobTotal = count(is_array($resolved['job_nos'] ?? null) ? $resolved['job_nos'] : []);
+        project_report_load_progress(8, 'resolve', [
+            'done_jobs' => 0,
+            'job_total' => $resolvedJobTotal,
+        ]);
         if (!$forceRefresh) {
             @set_time_limit(180);
             if (($resolved['mode'] ?? '') === 'project') {
@@ -412,6 +419,11 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             $overview['contract_no'] = (string) ($overview['contract_no'] ?? ($resolved['contract_no'] ?? ''));
             $overview['data_cached_at'] = project_get_data_cached_at() ?? time();
             $overview['include_unbooked_costs'] = $includeUnbooked;
+
+            project_report_load_progress(96, 'done', [
+                'done_jobs' => $resolvedJobTotal,
+                'job_total' => $resolvedJobTotal,
+            ]);
 
             $resultId = 'r_' . bin2hex(random_bytes(12));
             project_load_state_write($resultId, [
@@ -629,6 +641,12 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         $lines = project_enrich_details_names($company, $lines, $ttl);
 
         $dataCachedAt = project_get_data_cached_at() ?? time();
+        $countProjects = project_projects_for_closed_card(
+            $company,
+            (string) ($state['contract_no'] ?? ''),
+            $projects,
+            $ttl
+        );
         $overview = [
             'projects' => $projects,
             'lines' => $lines,
@@ -643,6 +661,7 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
             'data_cached_at' => $dataCachedAt,
             'include_unbooked_costs' => !array_key_exists('include_unbooked_costs', $state)
                 || !empty($state['include_unbooked_costs']),
+            'count_projects' => $countProjects,
         ];
 
         $resultId = 'r_' . bin2hex(random_bytes(12));

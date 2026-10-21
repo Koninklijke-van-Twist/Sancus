@@ -793,6 +793,12 @@ function odata_mimir_company_environment_map(?string $environment = null): array
  */
 function odata_mimir_query_impl(string $company, string $table, array $odataQuery, int $ttlSeconds): array
 {
+    $hook = $GLOBALS['SANCUS_MIMIR_QUERY'] ?? null;
+    if (is_callable($hook)) {
+        $rows = $hook($company, $table, $odataQuery, $ttlSeconds);
+        return is_array($rows) ? array_values($rows) : [];
+    }
+
     consolelog("Mímir query company=$company table=$table\n");
 
     $response = odata_mimir_request(
@@ -848,13 +854,27 @@ function odata_mimir_collect_paged_value(array $response): array
 /**
  * Zelfde query's naast elkaar. Eén transportfout laat de caller terugvallen.
  *
+ * De optionele callback vuurt zodra een eerste pagina binnen is (vóór nextLink).
+ * $GLOBALS['SANCUS_MIMIR_QUERY_MANY'] vervangt het transport in tests en geeft
+ * meteen de rijlijsten terug; productie zet die haak niet.
+ *
  * @param list<array{company:string,table:string,query:array<string,mixed>,ttl:int}> $calls
+ * @param callable(int,int,int):void|null $onEach afgerond, totaal, index
  * @return list<list<array<string,mixed>>>
  */
-function odata_mimir_query_many(array $calls): array
+function odata_mimir_query_many(array $calls, ?callable $onEach = null): array
 {
     if ($calls === []) {
         return [];
+    }
+
+    $hook = $GLOBALS['SANCUS_MIMIR_QUERY_MANY'] ?? null;
+    if (is_callable($hook)) {
+        $listed = $hook($calls, $onEach);
+        if (!is_array($listed)) {
+            throw new Exception('Mímir parallelle query mislukt.');
+        }
+        return array_values($listed);
     }
 
     $specs = [];
@@ -870,7 +890,7 @@ function odata_mimir_query_many(array $calls): array
         ];
     }
 
-    $first = odata_mimir_curl_many($specs);
+    $first = odata_mimir_curl_many($specs, $onEach);
     $responses = [];
     foreach ($first as $item) {
         if (empty($item['ok']) || !is_array($item['data'] ?? null)) {
@@ -928,9 +948,10 @@ function odata_mimir_query_body(string $company, string $table, array $odataQuer
 
 /**
  * @param list<array{method:string,url:string,body:?array}> $specs
+ * @param callable(int,int,int):void|null $onEach afgerond, totaal, index van de spec
  * @return list<array{ok:bool,data:?array,error:?Throwable}>
  */
-function odata_mimir_curl_many(array $specs): array
+function odata_mimir_curl_many(array $specs, ?callable $onEach = null): array
 {
     $apiKey = odata_mimir_api_key();
     if ($apiKey === '') {
@@ -996,8 +1017,43 @@ function odata_mimir_curl_many(array $specs): array
         $handles[$index] = $ch;
     }
 
+    $handleTotal = count($handles);
+    $indexById = [];
+    foreach ($handles as $index => $ch) {
+        $indexById[spl_object_id($ch)] = (int) $index;
+    }
+    $finishedIds = [];
+    $finishedCount = 0;
+    $notifyFinished = static function () use ($multi, &$finishedIds, &$finishedCount, $indexById, $handleTotal, $onEach): void {
+        if ($onEach === null) {
+            return;
+        }
+        while (true) {
+            $info = curl_multi_info_read($multi);
+            if ($info === false) {
+                break;
+            }
+            $finished = $info['handle'] ?? null;
+            if (!is_object($finished)) {
+                continue;
+            }
+            $id = spl_object_id($finished);
+            if (isset($finishedIds[$id])) {
+                continue;
+            }
+            $finishedIds[$id] = true;
+            $finishedCount++;
+            $specIndex = $indexById[$id] ?? null;
+            if ($specIndex === null) {
+                continue;
+            }
+            $onEach($finishedCount, $handleTotal, $specIndex);
+        }
+    };
+
     do {
         $status = curl_multi_exec($multi, $running);
+        $notifyFinished();
     } while ($status === CURLM_CALL_MULTI_PERFORM);
 
     while ($running && $status === CURLM_OK) {
@@ -1006,8 +1062,10 @@ function odata_mimir_curl_many(array $specs): array
         }
         do {
             $status = curl_multi_exec($multi, $running);
+            $notifyFinished();
         } while ($status === CURLM_CALL_MULTI_PERFORM);
     }
+    $notifyFinished();
 
     if ($status !== CURLM_OK) {
         foreach ($handles as $ch) {
