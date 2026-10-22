@@ -1558,10 +1558,18 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         not_found: <?= json_encode(LOC('sancus.error.project_not_found'), JSON_UNESCAPED_UNICODE) ?>,
         expired: <?= json_encode(LOC('sancus.error.load_failed'), JSON_UNESCAPED_UNICODE) ?>,
         load_failed: <?= json_encode(LOC('sancus.error.load_failed'), JSON_UNESCAPED_UNICODE) ?>,
-        redirect: <?= json_encode(LOC('sancus.progress.resolve'), JSON_UNESCAPED_UNICODE) ?>
+        redirect: <?= json_encode(LOC('sancus.progress.redirect'), JSON_UNESCAPED_UNICODE) ?>,
+        timeout: <?= json_encode(LOC('sancus.error.load_timeout'), JSON_UNESCAPED_UNICODE) ?>
     };
+    var LOAD_WATCHDOG_MS = 6 * 60 * 1000;
 
     function setProgress(pct, labelKey, meta) {
+        if (failed && labelKey !== 'timeout') {
+            return;
+        }
+        if (labelKey !== 'timeout' && typeof armWatchdog === 'function') {
+            armWatchdog();
+        }
         var value = Math.max(0, Math.min(100, Number(pct) || 0));
         if (bar) {
             bar.style.width = value + '%';
@@ -1721,7 +1729,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             }
 
             if (data.done) {
-                setProgress(100, data.label || 'error');
+                // 'redirect' zonder doel is een fout, geen eindtoestand om op te blijven wachten
+                var endLabel = data.label || 'error';
+                setProgress(100, endLabel === 'redirect' || endLabel === 'resolve' ? 'load_failed' : endLabel);
+                window.clearTimeout(watchdog);
                 return;
             }
 
@@ -1783,9 +1794,26 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         });
     }
 
+    // Waakhond: geen eindeloze balk als BC/Mímir of de doorverwezen pagina blijft hangen.
+    // Telt opnieuw bij elke voortgangsmelding: alleen echte stilstand geeft de foutmelding.
+    var failed = false;
+    var watchdog = null;
+    function armWatchdog() {
+        window.clearTimeout(watchdog);
+        watchdog = window.setTimeout(function () {
+            failed = true;
+            setProgress(100, 'timeout');
+        }, LOAD_WATCHDOG_MS);
+    }
+    armWatchdog();
+    window.addEventListener('pagehide', function () {
+        window.clearTimeout(watchdog);
+    });
+
     setProgress(2, 'resolve');
     runStep('init', '').catch(function () {
         setProgress(100, 'error');
+        window.clearTimeout(watchdog);
     });
 })();
 (function () {

@@ -164,6 +164,11 @@ function odata_last_cached_at(): ?int
     return is_int($value) && $value > 0 ? $value : null;
 }
 
+function odata_direct_timeout_seconds_for_sapi(string $sapi): int
+{
+    return strtolower($sapi) === 'cli' ? 600 : 120;
+}
+
 function odata_get_json(string $url, array $auth): array
 {
     $ch = curl_init($url);
@@ -171,6 +176,10 @@ function odata_get_json(string $url, array $auth): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
+        // Zonder limiet blijft een hangende BC-call (bv. terugval na Mimir-fout) eindeloos open:
+        // set_time_limit telt wachttijd op het netwerk niet mee.
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => odata_direct_timeout_seconds_for_sapi(php_sapi_name()),
         CURLOPT_USERAGENT => $userAgent,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
