@@ -1492,6 +1492,48 @@ function project_projects_for_closed_card(string $company, string $contractNo, a
 }
 
 /**
+ * Accountmanager van een contract: AppCustomerCard.Salesperson_Code van de klant
+ * (Customer_No van het contract), met de naam uit SalespersonPurchaserCard.
+ * Lege code = geen accountmanager.
+ *
+ * @return array{code:string,name:string}
+ */
+function project_contract_salesperson(string $company, string $customerNo, int $ttl = 3600): array
+{
+    $customerNo = trim($customerNo);
+    if ($customerNo === '' || preg_match('/[\t\r\n]/', $customerNo) === 1) {
+        return ['code' => '', 'name' => ''];
+    }
+    $rows = project_try_fetch_rows($company, 'AppCustomerCard', [
+        '$select' => SANCUS_CUSTOMER_SALESPERSON_SELECT,
+        '$filter' => "No eq '" . project_escape_odata_string($customerNo) . "'",
+    ], $ttl);
+    $code = '';
+    foreach ($rows as $row) {
+        if (is_array($row)) {
+            $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
+            break;
+        }
+    }
+    if ($code === '') {
+        return ['code' => '', 'name' => ''];
+    }
+    $name = '';
+    try {
+        foreach (project_fetch_salespersons($company, $ttl) as $person) {
+            if (strcasecmp($person['code'], $code) === 0) {
+                $name = $person['name'];
+                break;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[Sancus] verkopernaam ophalen mislukt: ' . $e->getMessage());
+    }
+
+    return ['code' => $code, 'name' => $name];
+}
+
+/**
  * Contractnummers van een verkoper via Projecten.KVT_Sales_Person_Code.
  * Het contractnummer is Projecten.KVT_Contract_No, hetzelfde veld als op AppProjecten.
  *

@@ -75,6 +75,12 @@ $GLOBALS['SANCUS_ODATA_BC_FETCH'] = static function (string $url) use (&$calls):
         return [];
     }
     if (str_contains($decoded, 'AppCustomerCard')) {
+        if (str_contains($decoded, "No eq 'K1001'")) {
+            return [['No' => 'K1001', 'Name' => 'Klant', 'Salesperson_Code' => 'JANSEN']];
+        }
+        if (str_contains($decoded, "No eq 'K9999'")) {
+            return [['No' => 'K9999', 'Name' => 'Klant', 'Salesperson_Code' => '']];
+        }
         if (!str_contains($decoded, "Salesperson_Code eq 'JANSEN'")) {
             return [];
         }
@@ -465,6 +471,15 @@ test_assert('load_step zonder datum tot', str_contains($index, "'date_to' => ''"
 test_assert('salesperson via logincheck', str_contains($salespersonPage, "require_once __DIR__ . '/logincheck.php'"));
 test_assert('analytics.php niet includen', preg_match('/require(?:_once)?\s*\(?\s*[\'\"].*analytics\.php/', $salespersonPage) !== 1);
 test_assert('rij opent het contract', str_contains($salespersonPage, "'contract' => \$contractNo"));
+
+// Accountmanager-kaart: AppCustomerCard.Salesperson_Code van de klant
+$manager = project_contract_salesperson('Koninklijke van Twist', 'K1001', 60);
+test_assert('accountmanager via klant', $manager['code'] === 'JANSEN' && $manager['name'] === 'Jan Jansen', json_encode($manager));
+$noManager = project_contract_salesperson('Koninklijke van Twist', 'K9999', 60);
+test_assert('klant zonder verkoper', $noManager === ['code' => '', 'name' => ''], json_encode($noManager));
+test_assert('lege klant', project_contract_salesperson('Koninklijke van Twist', '', 60)['code'] === '');
+test_assert('kaart accountmanager in index', str_contains($index, "LOC('sancus.meta.account_manager')") && str_contains($index, "LOC('sancus.meta.account_manager_none')"));
+test_assert('lokalisatie accountmanager', LOC('sancus.meta.account_manager') !== 'sancus.meta.account_manager');
 
 if ($failures > 0) {
     fwrite(STDERR, $failures . " failed\n");
