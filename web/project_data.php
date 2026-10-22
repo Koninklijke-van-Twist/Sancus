@@ -26,6 +26,7 @@ const SANCUS_DEFAULT_DIMENSION_SELECT = 'Table_ID,No,Dimension_Code,Dimension_Va
 const SANCUS_CUSTOMER_TABLE_ID = 18;
 const SANCUS_MAIN_DEBTOR_DIMENSION = 'MAIN_DEBTOR';
 const SANCUS_PROJECTEN_BY_SALESPERSON_SELECT = 'KVT_Contract_No,KVT_Sales_Person_Code';
+const SANCUS_ONDERHOUDSCONTRACT_SELECT = 'Contract_No,Customer_No,Salesperson_Code,Starting_Date';
 const SANCUS_PROJECTEN_STATUS_SELECT = 'No,Status,KVT_Contract_No';
 const SANCUS_MAIN_ENTITY_SELECT = 'No,Description';
 const SANCUS_HOURLY_CACHE_TTL = 3900;
@@ -1492,27 +1493,26 @@ function project_projects_for_closed_card(string $company, string $contractNo, a
 }
 
 /**
- * Accountmanager van een contract: AppCustomerCard.Salesperson_Code van de klant
- * (Customer_No van het contract), met de naam uit SalespersonPurchaserCard.
+ * Accountmanager van een contract: Onderhoudscontract.Salesperson_Code, met als
+ * terugval AppCustomerCard.Salesperson_Code van de klant (Customer_No van het contract), met de naam uit SalespersonPurchaserCard.
  * Lege code = geen accountmanager.
  *
  * @return array{code:string,name:string}
  */
-function project_contract_salesperson(string $company, string $customerNo, int $ttl = 3600): array
+function project_contract_salesperson(string $company, string $customerNo, int $ttl = 3600, string $contractNo = ''): array
 {
+    $code = project_fetch_onderhoudscontract_salesperson_code($company, $contractNo, $ttl);
     $customerNo = trim($customerNo);
-    if ($customerNo === '' || preg_match('/[\t\r\n]/', $customerNo) === 1) {
-        return ['code' => '', 'name' => ''];
-    }
-    $rows = project_try_fetch_rows($company, 'AppCustomerCard', [
-        '$select' => SANCUS_CUSTOMER_SALESPERSON_SELECT,
-        '$filter' => "No eq '" . project_escape_odata_string($customerNo) . "'",
-    ], $ttl);
-    $code = '';
-    foreach ($rows as $row) {
-        if (is_array($row)) {
-            $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
-            break;
+    if ($code === '' && $customerNo !== '' && preg_match('/[\t\r\n]/', $customerNo) !== 1) {
+        $rows = project_try_fetch_rows($company, 'AppCustomerCard', [
+            '$select' => SANCUS_CUSTOMER_SALESPERSON_SELECT,
+            '$filter' => "No eq '" . project_escape_odata_string($customerNo) . "'",
+        ], $ttl);
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
+                break;
+            }
         }
     }
     if ($code === '') {
@@ -1531,6 +1531,76 @@ function project_contract_salesperson(string $company, string $customerNo, int $
     }
 
     return ['code' => $code, 'name' => $name];
+}
+
+/**
+ * Contractnummers van een verkoper via webservice Onderhoudscontract (pagina 11333015):
+ * Salesperson_Code eq <code>, optioneel Starting_Date ge <date_from>.
+ * Paginering via @odata.nextLink in project_fetch_rows; geen $top.
+ *
+ * @return list<string>
+ */
+function project_fetch_onderhoudscontract_nos_for_salesperson(string $company, string $salespersonCode, string $dateFrom = '', int $ttl = 3600): array
+{
+    $salespersonCode = trim($salespersonCode);
+    if ($salespersonCode === '' || preg_match('/[\t\r\n]/', $salespersonCode) === 1) {
+        return [];
+    }
+    $filter = "Salesperson_Code eq '" . project_escape_odata_string($salespersonCode) . "'";
+    $dateFrom = trim($dateFrom);
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom) === 1) {
+        $filter .= ' and Starting_Date ge ' . $dateFrom;
+    }
+    $rows = project_try_fetch_rows($company, 'Onderhoudscontract', [
+        '$select' => SANCUS_ONDERHOUDSCONTRACT_SELECT,
+        '$filter' => $filter,
+    ], $ttl);
+
+    $contractNos = [];
+    $seen = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contractNo = project_odata_scalar_string($row['Contract_No'] ?? null);
+        if ($contractNo === '' || !project_is_bc_code($contractNo)) {
+            continue;
+        }
+        $key = project_normalize_match_text($contractNo);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $contractNos[] = $contractNo;
+    }
+
+    return $contractNos;
+}
+
+/**
+ * Salesperson_Code van een contract uit Onderhoudscontract ('' als leeg/onbekend).
+ */
+function project_fetch_onderhoudscontract_salesperson_code(string $company, string $contractNo, int $ttl = 3600): string
+{
+    $contractNo = trim($contractNo);
+    if (!project_is_bc_code($contractNo)) {
+        return '';
+    }
+    $rows = project_try_fetch_rows($company, 'Onderhoudscontract', [
+        '$select' => SANCUS_ONDERHOUDSCONTRACT_SELECT,
+        '$filter' => "Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
+    ], $ttl);
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
+        if ($code !== '') {
+            return $code;
+        }
+    }
+
+    return '';
 }
 
 /**
@@ -1670,7 +1740,20 @@ function project_salesperson_contract_rows(
         ];
     }
 
-    $contractNos = project_fetch_contract_nos_for_salesperson($company, $person['code'], $ttl);
+    $contractNos = [];
+    $seenContracts = [];
+    foreach ([
+        project_fetch_onderhoudscontract_nos_for_salesperson($company, $person['code'], $dateFrom, $ttl),
+        project_fetch_contract_nos_for_salesperson($company, $person['code'], $ttl),
+    ] as $sourceNos) {
+        foreach ($sourceNos as $sourceNo) {
+            $key = project_normalize_match_text($sourceNo);
+            if (!isset($seenContracts[$key])) {
+                $seenContracts[$key] = true;
+                $contractNos[] = $sourceNo;
+            }
+        }
+    }
     $customerContracts = [];
     try {
         $customers = project_fetch_customers_by_salesperson($company, $person['code'], $ttl);
