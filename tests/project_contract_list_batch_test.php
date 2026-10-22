@@ -128,7 +128,7 @@ foreach ($single as $i => $row) {
     }
 }
 test_assert('zelfde totalen, % afgesloten en contractwaarde als per contract', $same, $detail);
-test_assert('werkorder-project telt mee in % afgesloten', ($batched[0]['metrics']['closed_total'] ?? 0) === 3, json_encode($batched[0]['metrics'] ?? null));
+test_assert('werkorder-only project (geen KVT_Contract_No) telt niet mee (Ariadne)', ($batched[0]['metrics']['closed_total'] ?? 0) === 2, json_encode($batched[0]['metrics'] ?? null));
 
 test_assert('elke rij heeft een verkoperveld voor de lijstkolom', isset($batched[0]['salesperson']) && array_key_exists('name', $batched[0]['salesperson']));
 test_assert('geen ne-lege-string-filter', !str_contains(implode("\n", $calls), "ne ''"));
@@ -161,7 +161,17 @@ test_assert('verkooppost zonder Line_Amount_LCY telt mee als gefactureerd', abs(
 $saleLcy = project_normalize_posten_row(['Entry_Type' => 'Sale', 'Line_Amount_LCY' => -100.0, 'Line_Amount' => -90.0]);
 test_assert('Line_Amount_LCY wint als het er wel is', abs($saleLcy['revenue'] - 100.0) < 0.001);
 test_assert('posten-select vraagt Line_Amount op', str_contains(SANCUS_POSTEN_SELECT, ',Line_Amount\'') || str_ends_with(SANCUS_POSTEN_SELECT, ',Line_Amount'));
-test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v2' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
+test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v3' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
+
+// Contractscope (Ariadne): alleen KVT_Contract_No-projecten; plus posten met eigen LVS_Contract_No
+[$scopeP, $scopeW] = project_contract_scope('CT26000009', [['no' => 'PRJ1', 'contract_no' => 'CT26000009'], ['no' => 'PRJ2605125', 'contract_no' => '']], [['no' => 'WO1', 'job_no' => 'PRJ1'], ['no' => 'WO2605781', 'job_no' => 'PRJ2605125'], ['no' => 'WO0', 'job_no' => '']]);
+test_assert('scope: offerteproject via WO.Contract_No valt weg', array_column($scopeP, 'no') === ['PRJ1'] && array_column($scopeW, 'no') === ['WO1', 'WO0']);
+$tagged = project_contract_tagged_posten_lines('CT26000009', ['PRJ1'], [
+    ['Entry_No' => 1, 'Job_No' => 'PRJ2605125', 'Entry_Type' => 'Usage', 'Total_Cost_LCY' => 135.66, 'LVS_Contract_No' => 'CT26000009'],
+    ['Entry_No' => 2, 'Job_No' => 'PRJ2605125', 'Entry_Type' => 'Usage', 'Total_Cost_LCY' => 718.96, 'LVS_Contract_No' => ''],
+    ['Entry_No' => 3, 'Job_No' => 'PRJ1', 'Entry_Type' => 'Usage', 'Total_Cost_LCY' => 5, 'LVS_Contract_No' => 'CT26000009'],
+]);
+test_assert('LVS_Contract_No-posten: alleen getagde rij buiten de scope (geen dubbeltelling)', count($tagged) === 1 && abs($tagged[0]['cost'] - 135.66) < 0.001);
 
 echo $failures === 0 ? "\nAlle tests geslaagd.\n" : "\n{$failures} test(s) mislukt.\n";
 exit($failures === 0 ? 0 : 1);
