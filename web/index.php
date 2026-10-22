@@ -1032,17 +1032,17 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.material')) ?></span>
-                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalMaterialMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalMaterialMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalMaterialMoney, 'cost')) ?>"><?= portal_h(portal_format_amount($totalMaterialMoney)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalMaterial, 'Materiaal')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.hours')) ?></span>
-                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalHoursMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalHoursMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalHoursMoney, 'cost')) ?>"><?= portal_h(portal_format_amount($totalHoursMoney)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalHours, 'Uren')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.kilometers')) ?></span>
-                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalKilometersMoney, 'profit')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
+                    <span class="sancus-kpi-value <?= portal_h(portal_amount_class($totalKilometersMoney, 'cost')) ?>"><?= portal_h(portal_format_amount($totalKilometersMoney)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h(portal_format_quantity_with_unit($totalKilometers, 'Kilometers')) ?></span>
                 </div>
                 <div class="sancus-kpi">

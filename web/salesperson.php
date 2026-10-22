@@ -58,9 +58,9 @@ function salesperson_metric_cells(array $row): string
     $html .= '<td class="num ' . portal_h($profitPct === null ? 'amount-zero' : portal_amount_class((float) $profitPct, 'profit')) . '"'
         . ($profitPct !== null ? ' data-xv="' . portal_h(sprintf('%.6F', (float) $profitPct / 100)) . '" data-xt="percent"' : '')
         . '>' . portal_h(portal_format_percent($profitPct)) . '</td>';
-    $html .= salesperson_money_cell((float) $metrics['material_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['material_qty'], 'Materiaal'));
-    $html .= salesperson_money_cell((float) $metrics['hours_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['hours_qty'], 'Uren'));
-    $html .= salesperson_money_cell((float) $metrics['kilometers_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['kilometers_qty'], 'Kilometers'));
+    $html .= salesperson_money_cell((float) $metrics['material_money'], 'cost', portal_format_quantity_with_unit((float) $metrics['material_qty'], 'Materiaal'));
+    $html .= salesperson_money_cell((float) $metrics['hours_money'], 'cost', portal_format_quantity_with_unit((float) $metrics['hours_qty'], 'Uren'));
+    $html .= salesperson_money_cell((float) $metrics['kilometers_money'], 'cost', portal_format_quantity_with_unit((float) $metrics['kilometers_qty'], 'Kilometers'));
     $closedTotal = (int) $metrics['closed_total'];
     $html .= '<td class="num" data-xv="' . portal_h(sprintf('%.6F', $closedTotal > 0 ? (int) $metrics['closed'] / $closedTotal : 0)) . '" data-xt="percent">'
         . portal_h(LOC('sancus.meta.closed_value', (int) $metrics['closed_percent'], (int) $metrics['closed'], $closedTotal)) . '</td>';
