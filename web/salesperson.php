@@ -124,63 +124,98 @@ if (
     exit;
 }
 
-// Kengetallen voor een handvol contracten uit de lijst (gebundeld, #23). De lijst zelf
-// laadt zonder posten; de browser haalt de totalen per groepje op.
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && trim((string) ($_GET['action'] ?? '')) === 'summary') {
-    header('Content-Type: application/json; charset=utf-8');
+// Totalen van de hele contractlijst in één gestreamd verzoek (#25). Server-side gebundeld
+// per groepje (or-ketens), met een voortgangsregel per groepje; de browser toont de
+// tabel pas als alles binnen is. De sessie wordt direct vrijgegeven, zodat andere
+// verzoeken (cacheteller, navigatie) niet op de sessie-lock wachten.
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && trim((string) ($_POST['action'] ?? '')) === 'summary_stream') {
+    $summaryPrefEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $summaryPrefs = $summaryPrefEmail !== '' ? loadUserPrefs($summaryPrefEmail) : [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+    @ini_set('zlib.output_compression', '0');
+    @ini_set('implicit_flush', '1');
+    header('Content-Type: application/x-ndjson; charset=utf-8');
     header('Cache-Control: no-store');
-    @set_time_limit(170);
-    $summaryCompanies = project_companies_for_page();
-    $summaryCompany = trim((string) ($_GET['company'] ?? ''));
-    if (!in_array($summaryCompany, $summaryCompanies, true)) {
-        http_response_code(400);
-        echo json_encode(['ok' => false, 'error' => 'company']);
+    header('X-Accel-Buffering: no');
+    while (ob_get_level() > 0) {
+        ob_end_flush();
+    }
+    $emit = static function (array $line): void {
+        echo json_encode($line, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+        flush();
+    };
+    $summaryCompany = trim((string) ($_POST['company'] ?? ''));
+    if (!in_array($summaryCompany, project_companies_for_page(), true)) {
+        $emit(['ok' => false, 'done' => true, 'error' => 'company']);
         exit;
     }
     $summaryNos = [];
-    foreach (explode(',', (string) ($_GET['contracts'] ?? '')) as $summaryNo) {
+    foreach (explode(',', (string) ($_POST['contracts'] ?? '')) as $summaryNo) {
         $summaryNo = trim($summaryNo);
         if ($summaryNo !== '' && project_is_bc_code($summaryNo)) {
             $summaryNos[project_normalize_match_text($summaryNo)] = $summaryNo;
         }
     }
-    $summaryNos = array_slice(array_values($summaryNos), 0, SANCUS_LIST_SUMMARY_GROUP);
-    $summaryPrefEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
-    $summaryPrefs = $summaryPrefEmail !== '' ? loadUserPrefs($summaryPrefEmail) : [];
-    $summaryRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
-    $summaryOut = [];
+    $summaryNos = array_slice(array_values($summaryNos), 0, 2000);
+    $summaryTotal = count($summaryNos);
+    $summaryRefresh = in_array(strtolower(trim((string) ($_POST['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
+    $emit(['event' => 'progress', 'done_count' => 0, 'total' => $summaryTotal]);
+    $summaryDone = 0;
     try {
         auth_set_current_company_context($summaryCompany);
         project_set_force_refresh($summaryRefresh);
-        $summaryContracts = [];
+        $summaryUnbooked = !empty($summaryPrefs['include_unbooked_costs']);
+        $summaryEmitRows = static function (array $rowsOut) use ($emit, &$summaryDone, $summaryTotal): void {
+            $items = [];
+            foreach ($rowsOut as $summaryRow) {
+                $summaryMetrics = is_array($summaryRow['metrics'] ?? null) ? $summaryRow['metrics'] : null;
+                $items[] = [
+                    'contract_no' => (string) $summaryRow['contract_no'],
+                    'cells' => salesperson_metric_cells($summaryRow),
+                    'customer' => salesperson_customer_cell($summaryRow),
+                    'has_customer' => trim((string) ($summaryRow['customer_name'] ?? '')) !== '' || trim((string) ($summaryRow['customer_no'] ?? '')) !== '',
+                    'salesperson' => salesperson_person_label(is_array($summaryRow['salesperson'] ?? null) ? $summaryRow['salesperson'] : []),
+                    'closed' => $summaryMetrics === null ? null : project_row_matches_closed_filter($summaryRow, 'closed'),
+                ];
+            }
+            $summaryDone += count($rowsOut);
+            $emit(['event' => 'rows', 'rows' => $items, 'done_count' => $summaryDone, 'total' => $summaryTotal]);
+        };
+        // Eerst de cache (per contract), daarna alleen de ontbrekende contracten gebundeld
+        $cachedRows = [];
+        $missingNos = [];
         foreach ($summaryNos as $summaryNo) {
-            $summaryContracts[] = ['contract_no' => $summaryNo, 'customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
+            $cached = project_list_summary_cache_get($summaryCompany, $summaryNo, $summaryUnbooked, SANCUS_NIGHTLY_CACHE_TTL);
+            if ($cached !== null) {
+                $cachedRows[] = $cached;
+            } else {
+                $missingNos[] = $summaryNo;
+            }
         }
-        foreach (project_contract_summary_rows_batched(
-            $summaryCompany,
-            $summaryContracts,
-            SANCUS_NIGHTLY_CACHE_TTL,
-            !empty($summaryPrefs['include_unbooked_costs'])
-        ) as $summaryRow) {
-            $summaryMetrics = is_array($summaryRow['metrics'] ?? null) ? $summaryRow['metrics'] : null;
-            $summaryOut[] = [
-                'contract_no' => (string) $summaryRow['contract_no'],
-                'cells' => salesperson_metric_cells($summaryRow),
-                'customer' => salesperson_customer_cell($summaryRow),
-                'has_customer' => trim((string) ($summaryRow['customer_name'] ?? '')) !== '' || trim((string) ($summaryRow['customer_no'] ?? '')) !== '',
-                'salesperson' => salesperson_person_label(is_array($summaryRow['salesperson'] ?? null) ? $summaryRow['salesperson'] : []),
-                'closed' => $summaryMetrics === null ? null : project_row_matches_closed_filter($summaryRow, 'closed'),
-            ];
+        if ($cachedRows !== []) {
+            $summaryEmitRows($cachedRows);
         }
+        foreach (array_chunk($missingNos, SANCUS_LIST_SUMMARY_GROUP) as $summaryChunk) {
+            @set_time_limit(180);
+            $summaryContracts = [];
+            foreach ($summaryChunk as $summaryNo) {
+                $summaryContracts[] = ['contract_no' => $summaryNo, 'customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
+            }
+            $batchRows = project_contract_summary_rows_batched($summaryCompany, $summaryContracts, SANCUS_NIGHTLY_CACHE_TTL, $summaryUnbooked);
+            foreach ($batchRows as $batchRow) {
+                project_list_summary_cache_put($summaryCompany, $batchRow, $summaryUnbooked);
+            }
+            $summaryEmitRows($batchRows);
+        }
+        $emit(['ok' => true, 'done' => true, 'done_count' => $summaryDone, 'total' => $summaryTotal]);
     } catch (Throwable $summaryError) {
         error_log('[Sancus] lijsttotalen mislukt: ' . substr($summaryError->getMessage(), 0, 500));
-        http_response_code(502);
-        echo json_encode(['ok' => false, 'error' => 'load_failed']);
-        exit;
+        $emit(['ok' => false, 'done' => true, 'error' => 'load_failed', 'done_count' => $summaryDone, 'total' => $summaryTotal]);
     } finally {
         project_set_force_refresh(false);
     }
-    echo json_encode(['ok' => true, 'rows' => $summaryOut], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -200,6 +235,11 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = $savedCompany;
 } else {
     $company = (string) ($companies[0] ?? '');
+}
+
+// Sessie alleen lezen: lock vrijgeven vóór BC/Mímir-fetches, anders wacht een tweede tab (#25)
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
 }
 
 $salespersonCode = trim((string) ($_GET['salesperson'] ?? ''));
@@ -342,6 +382,7 @@ $dataAgeLabel = $dataCachedAt !== null
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table .group-cell-name { display: block; margin-top: 2px; font-size: 0.82em; font-weight: 400; color: var(--kvt-muted); }
+        .sancus-list-progress { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
         tr.sancus-click-row { cursor: pointer; }
         tr.sancus-click-row:hover { background: #f8fafc; }
         tr.sancus-click-row a.sancus-row-link { color: var(--kvt-main-blue); font-weight: 700; text-decoration: none; }
@@ -461,10 +502,14 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($rows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.salesperson.empty')) ?></p>
             <?php else: ?>
+                <div class="sancus-list-progress" id="sancus-summary-progress" role="status" aria-live="polite">
+                    <div class="sancus-loader-spinner" aria-hidden="true"></div>
+                    <p id="sancus-summary-status"><?= portal_h(sprintf(LOC('sancus.salesperson.loading_progress'), 0, count($rows))) ?></p>
+                </div>
+                <div id="sancus-contract-list-wrap" hidden>
                 <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-contract-list') ?></div>
                 <div class="sancus-table-wrap">
-                    <p class="sancus-muted" id="sancus-summary-status" aria-live="polite"></p>
-                    <table class="sancus-table" id="sancus-contract-list" data-xlsx-title="<?= portal_h($pageTitle) ?>"
+                                        <table class="sancus-table" id="sancus-contract-list" data-xlsx-title="<?= portal_h($pageTitle) ?>"
                         data-company="<?= portal_h($company) ?>"
                         data-closed-filter="<?= portal_h($closedFilter) ?>"
                         data-refresh="<?= $forceRefresh ? '1' : '' ?>"
@@ -519,6 +564,7 @@ $dataAgeLabel = $dataCachedAt !== null
                         </tbody>
                     </table>
                 </div>
+                </div>
             <?php endif; ?>
         </section>
     <?php endif; ?>
@@ -530,59 +576,37 @@ $dataAgeLabel = $dataCachedAt !== null
 </div>
 
 <script>
-// Totalen per groepje contracten (#23): de lijst staat er meteen, de kengetallen
-// komen gebundeld binnen. Waakhond per verzoek; een hangend verzoek wordt 'Niet geladen'.
+// Hele contractlijst pas tonen als alle totalen binnen zijn (#25). Eén gestreamd verzoek
+// met voortgang 'x van y'; waakhond bij stilstand.
 (function () {
     var table = document.getElementById('sancus-contract-list');
-    if (!table) {
+    var wrap = document.getElementById('sancus-contract-list-wrap');
+    var progress = document.getElementById('sancus-summary-progress');
+    var status = document.getElementById('sancus-summary-status');
+    if (!table || !wrap) {
         return;
     }
-    var pending = Array.prototype.slice.call(table.querySelectorAll('tr[data-summary-contract]'));
-    var status = document.getElementById('sancus-summary-status');
-    var excel = document.querySelector('[data-xlsx-table="sancus-contract-list"]');
+    var rows = Array.prototype.slice.call(table.querySelectorAll('tr[data-summary-contract]'));
     var closedFilter = table.getAttribute('data-closed-filter') || 'all';
-    var group = Math.max(1, Number(table.getAttribute('data-group')) || 8);
-    var REQUEST_TIMEOUT_MS = 150 * 1000;
-    var CONCURRENCY = 2;
-    var total = pending.length;
-    var done = 0;
+    var STALL_MS = 180 * 1000;
+    var total = rows.length;
     var shown = 0;
+    var finished = false;
     var texts = {
         loading: <?= json_encode(LOC('sancus.salesperson.loading_progress'), JSON_UNESCAPED_UNICODE) ?>,
         incomplete: <?= json_encode(LOC('sancus.salesperson.incomplete'), JSON_UNESCAPED_UNICODE) ?>,
         filtered: <?= json_encode(LOC('sancus.salesperson.filtered_count'), JSON_UNESCAPED_UNICODE) ?>,
-        empty: <?= json_encode(LOC('sancus.salesperson.empty'), JSON_UNESCAPED_UNICODE) ?>
+        empty: <?= json_encode(LOC('sancus.salesperson.empty'), JSON_UNESCAPED_UNICODE) ?>,
+        failed: <?= json_encode(LOC('sancus.error.load_failed'), JSON_UNESCAPED_UNICODE) ?>,
+        timeout: <?= json_encode(LOC('sancus.error.load_timeout'), JSON_UNESCAPED_UNICODE) ?>
     };
-    if (total === 0) {
-        return;
-    }
-    if (excel) {
-        excel.disabled = true;
-        excel.style.opacity = '0.5';
-    }
-    if (closedFilter !== 'all') {
-        // Afgesloten-filter: pas tonen als bekend is of de rij voldoet
-        pending.forEach(function (tr) { tr.style.display = 'none'; });
-    }
     function format(text, a, b) {
-        return text.replace('%1$d', a).replace('%2$d', b).replace('%d', a);
+        return text.replace('%1$d', a).replace('%2$d', b);
     }
-    function updateStatus() {
-        if (!status) {
-            return;
-        }
-        if (done < total) {
-            status.textContent = format(texts.loading, done, total);
-        } else if (closedFilter !== 'all') {
-            status.textContent = shown === 0 ? texts.empty : format(texts.filtered, shown, total);
-        } else {
-            status.textContent = '';
-        }
-        if (done >= total && excel) {
-            excel.disabled = false;
-            excel.style.opacity = '';
-        }
-    }
+    var byNo = {};
+    rows.forEach(function (tr) {
+        byNo[String(tr.getAttribute('data-summary-contract')).toUpperCase()] = tr;
+    });
     function setRow(tr, item) {
         var cell = tr.querySelector('.sancus-summary-pending');
         if (!cell) {
@@ -616,60 +640,113 @@ $dataAgeLabel = $dataCachedAt !== null
         if (match) {
             shown++;
         }
-        done++;
     }
-    var groups = [];
-    for (var i = 0; i < pending.length; i += group) {
-        groups.push(pending.slice(i, i + group));
+    function finish(errorText) {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        window.clearTimeout(stall);
+        rows.forEach(function (tr) {
+            if (tr.hasAttribute('data-summary-contract')) {
+                setRow(tr, null);
+            }
+        });
+        if (errorText) {
+            status.textContent = errorText;
+            var spinner = progress.querySelector('.sancus-loader-spinner');
+            if (spinner) {
+                spinner.remove();
+            }
+            progress.classList.add('sancus-alert');
+            return;
+        }
+        progress.hidden = true;
+        wrap.hidden = false;
+        if (closedFilter !== 'all') {
+            var note = document.createElement('p');
+            note.className = 'sancus-muted';
+            note.textContent = shown === 0 ? texts.empty : format(texts.filtered, shown, total);
+            wrap.insertBefore(note, wrap.firstChild);
+        }
     }
-    function next() {
-        var rows = groups.shift();
-        if (!rows) {
-            return Promise.resolve();
-        }
-        var params = new URLSearchParams();
-        params.set('action', 'summary');
-        params.set('company', table.getAttribute('data-company') || '');
-        params.set('contracts', rows.map(function (tr) { return tr.getAttribute('data-summary-contract'); }).join(','));
-        if (table.getAttribute('data-refresh') === '1') {
-            params.set('refresh', '1');
-        }
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var timer = window.setTimeout(function () {
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var stall = null;
+    function armStall() {
+        window.clearTimeout(stall);
+        stall = window.setTimeout(function () {
             if (controller) {
                 controller.abort();
             }
-        }, REQUEST_TIMEOUT_MS);
-        return fetch('salesperson.php?' + params.toString(), {
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: { 'Accept': 'application/json' },
-            signal: controller ? controller.signal : undefined
-        }).then(function (response) {
-            if (!response.ok) {
-                throw new Error('load_failed');
-            }
-            return response.json();
-        }).then(function (data) {
-            var byNo = {};
-            ((data && data.rows) || []).forEach(function (item) {
-                byNo[String(item.contract_no).toUpperCase()] = item;
-            });
-            rows.forEach(function (tr) {
-                setRow(tr, byNo[String(tr.getAttribute('data-summary-contract')).toUpperCase()] || null);
-            });
-        }).catch(function () {
-            rows.forEach(function (tr) { setRow(tr, null); });
-        }).then(function () {
-            window.clearTimeout(timer);
-            updateStatus();
-            return next();
-        });
+            finish(texts.timeout);
+        }, STALL_MS);
     }
-    updateStatus();
-    for (var c = 0; c < CONCURRENCY; c++) {
-        next();
+    function handle(line) {
+        if (line.event === 'progress' || line.event === 'rows') {
+            (line.rows || []).forEach(function (item) {
+                var tr = byNo[String(item.contract_no).toUpperCase()];
+                if (tr) {
+                    setRow(tr, item);
+                }
+            });
+            status.textContent = format(texts.loading, Number(line.done_count) || 0, total);
+            armStall();
+            return;
+        }
+        if (line.done) {
+            finish(line.ok === false ? texts.failed : '');
+        }
     }
+    if (total === 0) {
+        finish('');
+        return;
+    }
+    var body = new URLSearchParams();
+    body.set('action', 'summary_stream');
+    body.set('company', table.getAttribute('data-company') || '');
+    body.set('contracts', rows.map(function (tr) { return tr.getAttribute('data-summary-contract'); }).join(','));
+    if (table.getAttribute('data-refresh') === '1') {
+        body.set('refresh', '1');
+    }
+    armStall();
+    fetch('salesperson.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/x-ndjson' },
+        body: body.toString(),
+        credentials: 'same-origin',
+        cache: 'no-store',
+        signal: controller ? controller.signal : undefined
+    }).then(function (response) {
+        if (!response.ok || !response.body || typeof response.body.getReader !== 'function') {
+            throw new Error('load_failed');
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        function pump() {
+            return reader.read().then(function (chunk) {
+                if (chunk.done) {
+                    if (buffer.trim() !== '') {
+                        handle(JSON.parse(buffer));
+                    }
+                    finish(finished ? '' : texts.failed);
+                    return;
+                }
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop();
+                lines.forEach(function (raw) {
+                    if (raw.trim() !== '') {
+                        handle(JSON.parse(raw));
+                    }
+                });
+                return pump();
+            });
+        }
+        return pump();
+    }).catch(function () {
+        finish(texts.failed);
+    });
 })();
 </script>
 <div id="sancus-loader" class="sancus-loader" aria-hidden="true" aria-busy="false">

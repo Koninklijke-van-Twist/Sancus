@@ -22,3 +22,4 @@ data/user_prefs/
 
 web/analytics/analytics.sqlite
 web/analytics/analytics.sqlite-*
+web/data/list_summary/

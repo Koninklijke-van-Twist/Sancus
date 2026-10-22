@@ -39,9 +39,9 @@ const SANCUS_JOB_FILTER_CHUNK = 40;
 const SANCUS_LOAD_JOB_CHUNK = SANCUS_JOB_FILTER_CHUNK;
 // Contractlijst: contractnummers per or-filter en Mímir-calls per golf
 const SANCUS_CONTRACT_BATCH_CHUNK = 40;
-const SANCUS_BATCH_WAVE = 3;
+const SANCUS_BATCH_WAVE = 4;
 // Contractlijst: aantal contracten per totalen-verzoek uit de browser
-const SANCUS_LIST_SUMMARY_GROUP = 8;
+const SANCUS_LIST_SUMMARY_GROUP = 40;
 
 /**
  * Functies
@@ -5090,7 +5090,56 @@ function project_contract_summary_rows_batched(string $company, array $contracts
         ];
     }
 
+    // Klantnaam uit AppCustomerCard.Name (bevestigd door Ariadne), gebundeld op No
+    $names = project_fetch_customer_names_by_nos($company, array_column($out, 'customer_no'), $ttl);
+    foreach ($out as $index => $row) {
+        $name = $names[project_normalize_match_text((string) ($row['customer_no'] ?? ''))] ?? '';
+        if ($name !== '') {
+            $out[$index]['customer_name'] = $name;
+        }
+    }
+
     return $out;
+}
+
+/**
+ * Klantnamen uit AppCustomerCard (No → Name), or-keten op No per bundel van 40.
+ * Een mislukte bundel geeft geen namen (de lijst toont dan het nummer).
+ *
+ * @param list<string> $customerNos
+ * @return array<string,string> genormaliseerd nummer => naam
+ */
+function project_fetch_customer_names_by_nos(string $company, array $customerNos, int $ttl = 3600): array
+{
+    $unique = [];
+    foreach ($customerNos as $no) {
+        $no = trim((string) $no);
+        if ($no !== '' && preg_match('/[\t\r\n]/', $no) !== 1) {
+            $unique[project_normalize_match_text($no)] = $no;
+        }
+    }
+    $calls = [];
+    foreach (array_chunk(array_values($unique), max(1, SANCUS_CONTRACT_BATCH_CHUNK)) as $index => $chunk) {
+        $calls['customers_' . $index] = ['entity' => 'AppCustomerCard', 'query' => [
+            '$select' => 'No,Name',
+            '$filter' => project_odata_or_eq('No', $chunk),
+        ]];
+    }
+    $names = [];
+    foreach (project_fetch_batched_calls($company, $calls, $ttl) as $rows) {
+        foreach ((array) $rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $no = project_odata_scalar_string($row['No'] ?? null);
+            $name = project_odata_scalar_string($row['Name'] ?? null);
+            if ($no !== '' && $name !== '') {
+                $names[project_normalize_match_text($no)] = $name;
+            }
+        }
+    }
+
+    return $names;
 }
 
 /**
@@ -5117,16 +5166,22 @@ function project_contract_list_salesperson(string $company, array $projectenRows
     }
     arsort($counts);
     $code = (string) array_key_first($counts);
-    $name = '';
-    try {
-        foreach (project_fetch_salespersons($company, $ttl) as $person) {
-            if (strcasecmp((string) $person['code'], $code) === 0) {
-                $name = (string) $person['name'];
-                break;
-            }
+    // Eén keer per verzoek de verkoperslijst ophalen, niet per contract
+    static $people = [];
+    if (!array_key_exists($company, $people)) {
+        try {
+            $people[$company] = project_fetch_salespersons($company, $ttl);
+        } catch (Throwable $e) {
+            error_log('[Sancus] verkopernaam lijst mislukt: ' . substr($e->getMessage(), 0, 300));
+            $people[$company] = [];
         }
-    } catch (Throwable $e) {
-        error_log('[Sancus] verkopernaam lijst mislukt: ' . substr($e->getMessage(), 0, 300));
+    }
+    $name = '';
+    foreach ($people[$company] as $person) {
+        if (strcasecmp((string) $person['code'], $code) === 0) {
+            $name = (string) $person['name'];
+            break;
+        }
     }
 
     return ['code' => $code, 'name' => $name];
@@ -5194,4 +5249,50 @@ function project_fill_contract_list_headers(string $company, array $rows, int $t
     }
 
     return $rows;
+}
+
+/**
+ * Cache van lijsttotalen per contract (web/data/list_summary, afgesloten map).
+ * Tweede keer dezelfde lijst laden = geen BC-calls; ↻ (refresh) slaat de cache over.
+ */
+function project_list_summary_cache_path(string $company, string $contractNo, bool $includeUnbookedCosts): string
+{
+    return __DIR__ . '/data/list_summary/' . sha1($company . "\n" . project_normalize_match_text($contractNo) . "\n" . ($includeUnbookedCosts ? '1' : '0')) . '.json';
+}
+
+/**
+ * @return array<string,mixed>|null
+ */
+function project_list_summary_cache_get(string $company, string $contractNo, bool $includeUnbookedCosts, int $ttl): ?array
+{
+    if (project_is_force_refresh()) {
+        return null;
+    }
+    $path = project_list_summary_cache_path($company, $contractNo, $includeUnbookedCosts);
+    if (!is_file($path) || (time() - (int) @filemtime($path)) > $ttl) {
+        return null;
+    }
+    $row = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($row) || !empty($row['load_error']) || !is_array($row['metrics'] ?? null)) {
+        return null;
+    }
+    project_note_data_cached_at((int) @filemtime($path));
+
+    return $row;
+}
+
+/**
+ * @param array<string,mixed> $row
+ */
+function project_list_summary_cache_put(string $company, array $row, bool $includeUnbookedCosts): void
+{
+    if (!empty($row['load_error']) || !is_array($row['metrics'] ?? null)) {
+        return;
+    }
+    $path = project_list_summary_cache_path($company, (string) ($row['contract_no'] ?? ''), $includeUnbookedCosts);
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    @file_put_contents($path, json_encode($row, JSON_UNESCAPED_UNICODE), LOCK_EX);
 }
