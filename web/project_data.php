@@ -11,7 +11,7 @@ require_once __DIR__ . '/odata.php';
  * Constants
  */
 // v2: Verkoop-posten tellen mee (Line_Amount); oude lijsttotalen vervallen
-const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v2';
+const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v3'; // v3: contractscope via KVT_Contract_No + LVS_Contract_No-posten
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY,Line_Amount';
 const SANCUS_PROJECT_SELECT = 'No,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
@@ -3350,7 +3350,7 @@ function project_sources_progress_label(string $kind, int $doneJobs = 0, int $jo
     if ($kind === 'jobs') {
         return 'job_planning';
     }
-    if ($kind === 'planning') {
+    if ($kind === 'planning' || $kind === 'tagged') {
         return 'contract_planning';
     }
     if ($kind === 'projecten' && $jobTotal > 0 && $doneJobs >= $jobTotal) {
@@ -3444,6 +3444,24 @@ function project_contract_source_plan(
     }
 
     if (project_is_bc_code($contractNo)) {
+        // Posten met eigen LVS_Contract_No (ook op projecten zonder KVT_Contract_No)
+        $plan[] = [
+            'key' => 'tagged',
+            'kind' => 'tagged',
+            'weight' => 1,
+            'jobs' => [],
+            'entity' => 'ProjectPosten',
+            'query' => [
+                '$select' => SANCUS_POSTEN_SELECT . ',LVS_Contract_No',
+                '$filter' => project_append_date_range_filter(
+                    "LVS_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
+                    'Posting_Date',
+                    $dateFrom,
+                    $dateTo
+                ),
+                '$orderby' => 'Entry_No asc',
+            ],
+        ];
         $plan[] = [
             'key' => 'projecten',
             'kind' => 'projecten',
@@ -3553,6 +3571,7 @@ function project_load_contract_sources(
         $rawJobs = [];
         $planningRows = [];
         $projectenRows = [];
+        $taggedRows = [];
         foreach ($plan as $item) {
             $rows = $parallel[$item['key']] ?? [];
             if (!is_array($rows)) {
@@ -3574,6 +3593,8 @@ function project_load_contract_sources(
                 $planningRows = $rows;
             } elseif ($item['kind'] === 'projecten') {
                 $projectenRows = $rows;
+            } elseif ($item['kind'] === 'tagged') {
+                $taggedRows = $rows;
             }
         }
         if ($doneUnits < $totalUnits) {
@@ -3584,7 +3605,10 @@ function project_load_contract_sources(
         }
 
         return [
-            'posten' => project_posten_from_raw_rows($rawPosten, $jobNos),
+            'posten' => array_merge(
+                project_posten_from_raw_rows($rawPosten, $jobNos),
+                project_contract_tagged_posten_lines($contractNo, $jobNos, $taggedRows)
+            ),
             'planning' => project_planning_lines_from_rows($planningRows),
             'job_planning' => project_rows_for_jobs($rawJobs, $jobNos),
             'projecten_rows' => $projectenRows,
@@ -3595,6 +3619,7 @@ function project_load_contract_sources(
     $planning = [];
     $rawJobs = [];
     $projectenRows = [];
+    $taggedRows = [];
     foreach ($plan as $item) {
         if ($item['kind'] === 'posten') {
             $posten = array_merge(
@@ -3610,12 +3635,18 @@ function project_load_contract_sources(
             );
         } elseif ($item['kind'] === 'projecten') {
             $projectenRows = project_try_fetch_rows($company, 'Projecten', $item['query'], $ttl);
+        } elseif ($item['kind'] === 'tagged') {
+            $taggedFetched = project_try_fetch_rows($company, 'ProjectPosten', $item['query'], $ttl);
+            $taggedRows = is_array($taggedFetched) ? $taggedFetched : [];
         }
         $note((string) $item['kind'], (int) $item['weight']);
     }
 
     return [
-        'posten' => project_normalized_lines_for_jobs($posten, $jobNos),
+        'posten' => array_merge(
+            project_normalized_lines_for_jobs($posten, $jobNos),
+            project_contract_tagged_posten_lines($contractNo, $jobNos, $taggedRows)
+        ),
         'planning' => $planning,
         'job_planning' => project_rows_for_jobs($rawJobs, $jobNos),
         'projecten_rows' => $projectenRows,
@@ -3635,6 +3666,62 @@ function project_load_contract_sources(
  *   contract_value:?float
  * }
  */
+/**
+ * Contractscope (Ariadne, BC-analyse): projecten horen bij een contract via AppProjecten.KVT_Contract_No.
+ * Werkorders met alleen WO.Contract_No wijzen naar losse offerteprojecten en tellen niet mee.
+ * Werkorders zonder Job_No blijven staan.
+ *
+ * @return array{0:list<array<string,mixed>>,1:list<array<string,mixed>>}
+ */
+function project_contract_scope(string $contractNo, array $projects, array $workorders): array
+{
+    $key = project_normalize_match_text($contractNo);
+    $kept = [];
+    $jobs = [];
+    foreach ($projects as $project) {
+        if (!is_array($project) || project_normalize_match_text((string) ($project['contract_no'] ?? '')) !== $key) {
+            continue;
+        }
+        $kept[] = $project;
+        $jobs[trim((string) ($project['no'] ?? ''))] = true;
+    }
+    $keptWo = [];
+    foreach ($workorders as $workorder) {
+        $jobNo = is_array($workorder) ? trim((string) ($workorder['job_no'] ?? '')) : '';
+        if (is_array($workorder) && ($jobNo === '' || isset($jobs[$jobNo]))) {
+            $keptWo[] = $workorder;
+        }
+    }
+
+    return [$kept, $keptWo];
+}
+
+/**
+ * Projectposten die zelf LVS_Contract_No = contract dragen, op projecten buiten de contractscope.
+ *
+ * @param list<string> $jobNos jobs die al via KVT_Contract_No meetellen
+ * @param list<array<string,mixed>> $rows ruwe ProjectPosten-rijen
+ * @return list<array<string,mixed>>
+ */
+function project_contract_tagged_posten_lines(string $contractNo, array $jobNos, array $rows): array
+{
+    $key = project_normalize_match_text($contractNo);
+    $have = array_fill_keys($jobNos, true);
+    $lines = [];
+    foreach ($rows as $row) {
+        if (!is_array($row) || project_normalize_match_text(project_odata_scalar_string($row['LVS_Contract_No'] ?? null)) !== $key) {
+            continue;
+        }
+        $jobNo = project_odata_scalar_string($row['Job_No'] ?? null);
+        if ($jobNo === '' || isset($have[$jobNo])) {
+            continue;
+        }
+        $lines[] = project_normalize_posten_row($row);
+    }
+
+    return $lines;
+}
+
 function project_fetch_contract_overview(
     string $company,
     string $contractNo,
@@ -3648,13 +3735,12 @@ function project_fetch_contract_overview(
     if ($reused !== null) {
         $projects = $reused['projects'];
         $workorders = $reused['workorders'];
-        $jobNos = project_collect_job_nos($projects, $workorders);
     } else {
         $projects = project_fetch_by_contract_no($company, $contractNo, $ttl);
         $workorders = project_fetch_workorders_for_contract($company, $contractNo, $ttl);
-        $jobNos = project_collect_job_nos($projects, $workorders);
-        $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     }
+    [$projects, $workorders] = project_contract_scope($contractNo, $projects, $workorders);
+    $jobNos = project_collect_job_nos($projects, $workorders);
 
     $loaded = project_load_contract_sources(
         $company,
@@ -4863,6 +4949,7 @@ function project_contract_summary_rows_batched(string $company, array $contracts
     $planningBy = [];
     $projectenBy = [];
     $salespersonBy = [];
+    $taggedBy = [];
 
     // Golf 1: vijf entiteiten per bundel contracten (or-keten op het contractnummer)
     $calls = [];
@@ -4876,6 +4963,8 @@ function project_contract_summary_rows_batched(string $company, array $contracts
             'projecten' => ['Projecten', SANCUS_PROJECTEN_STATUS_SELECT . ',KVT_Sales_Person_Code', 'KVT_Contract_No'],
             // Verkoper per contract (lijstkolom): zelfde bron als de accountmanager-kaart
             'onderhoud' => ['Onderhoudscontract', SANCUS_ONDERHOUDSCONTRACT_SELECT, 'Contract_No'],
+            // Posten met eigen LVS_Contract_No (ook op projecten zonder KVT_Contract_No)
+            'tagged' => ['ProjectPosten', SANCUS_POSTEN_SELECT . ',LVS_Contract_No', 'LVS_Contract_No'],
         ];
         foreach ($specs as $kind => [$entity, $select, $field]) {
             $label = $kind . '_' . $index;
@@ -4924,6 +5013,9 @@ function project_contract_summary_rows_batched(string $company, array $contracts
                 case 'projecten':
                     $projectenBy[$key][] = $row;
                     break;
+                case 'tagged':
+                    $taggedBy[$key][] = $row;
+                    break;
                 case 'onderhoud':
                     $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
                     if ($code !== '' && !isset($salespersonBy[$key])) {
@@ -4934,43 +5026,22 @@ function project_contract_summary_rows_batched(string $company, array $contracts
         }
     }
 
-    // Projecten via werkorder-Job_No die niet via KVT_Contract_No kwamen (al gebundeld)
+    // Contractscope: alleen projecten via KVT_Contract_No (werkorder-only offerteprojecten niet)
     $jobsBy = [];
     $allJobs = [];
-    $missing = [];
     foreach ($byKey as $key => $contractNo) {
-        $projects = $projectsBy[$key] ?? [];
+        [$projects, $workorders] = project_contract_scope($contractNo, $projectsBy[$key] ?? [], $workordersBy[$key] ?? []);
         usort($projects, static function (array $a, array $b): int {
             return strcmp((string) $b['no'], (string) $a['no']);
         });
         $projectsBy[$key] = $projects;
-        $workorders = $workordersBy[$key] ?? [];
         usort($workorders, static function (array $a, array $b): int {
             return strcmp((string) $a['no'], (string) $b['no']);
         });
         $workordersBy[$key] = $workorders;
         $jobsBy[$key] = project_collect_job_nos($projects, $workorders);
-        $have = array_fill_keys(array_column($projects, 'no'), true);
         foreach ($jobsBy[$key] as $jobNo) {
             $allJobs[$jobNo] = true;
-            if (!isset($have[$jobNo]) && project_is_bc_code($jobNo)) {
-                $missing[$jobNo] = true;
-            }
-        }
-    }
-    if ($missing !== []) {
-        $extra = [];
-        foreach (project_fetch_by_nos($company, array_keys($missing), $ttl) as $project) {
-            $extra[(string) $project['no']] = $project;
-        }
-        foreach ($jobsBy as $key => $jobNos) {
-            $have = array_fill_keys(array_column($projectsBy[$key], 'no'), true);
-            foreach ($jobNos as $jobNo) {
-                if (!isset($have[$jobNo]) && isset($extra[$jobNo])) {
-                    $projectsBy[$key][] = $extra[$jobNo];
-                    $have[$jobNo] = true;
-                }
-            }
         }
     }
 
@@ -5055,6 +5126,9 @@ function project_contract_summary_rows_batched(string $company, array $contracts
             foreach ($postenByJob[$jobNo] ?? [] as $line) {
                 $lines[] = $line;
             }
+        }
+        foreach (project_contract_tagged_posten_lines($contractNo, $jobNos, $taggedBy[$key] ?? []) as $line) {
+            $lines[] = $line;
         }
         foreach ($planningBy[$key] ?? [] as $row) {
             foreach (project_normalize_planning_row($row) as $line) {

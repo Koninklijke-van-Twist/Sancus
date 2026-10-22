@@ -547,7 +547,7 @@ $prefetchCounts = array_count_values($prefetchEntities);
 test_assert('prefetch slaat AppProjecten over', ($prefetchCounts['AppProjecten'] ?? 0) === 0);
 test_assert('prefetch slaat AppWerkorders over', ($prefetchCounts['AppWerkorders'] ?? 0) === 0);
 test_assert('prefetch slaat contractwaarde over', ($prefetchCounts['AppMaintenanceContracts'] ?? 0) === 0);
-test_assert('prefetch posten één call', ($prefetchCounts['ProjectPosten'] ?? 0) === 1);
+test_assert('prefetch posten één call (+1 LVS_Contract_No-posten)', ($prefetchCounts['ProjectPosten'] ?? 0) === 2);
 test_assert('prefetch planning één call', ($prefetchCounts['Job_Planning_Lines'] ?? 0) === 1);
 test_assert('prefetch bewaart contractwaarde', ($prefetched['contract_value'] ?? null) === 123.45);
 test_assert('prefetch bewaart klant', ($prefetched['customer_name'] ?? '') === 'Testklant');
@@ -623,7 +623,7 @@ try {
     test_assert('init haalt AppProjecten één keer', ($initCounts['AppProjecten'] ?? 0) === 1, json_encode($initCounts));
     test_assert('init haalt AppWerkorders één keer', ($initCounts['AppWerkorders'] ?? 0) === 1, json_encode($initCounts));
     test_assert('init haalt contractwaarde één keer', ($initCounts['AppMaintenanceContracts'] ?? 0) === 1, json_encode($initCounts));
-    test_assert('init bundelt 37 posten', ($initCounts['ProjectPosten'] ?? 0) === 1, json_encode($initCounts));
+    test_assert('init bundelt 37 posten (+1 LVS_Contract_No-posten)', ($initCounts['ProjectPosten'] ?? 0) === 2, json_encode($initCounts));
     test_assert('init bundelt 37 planningsregels', ($initCounts['Job_Planning_Lines'] ?? 0) === 1, json_encode($initCounts));
     test_assert('init-filter bevat 37 jobs', count(batch_test_jobs_in_filter($postenFilter)) === 37, $postenFilter);
     test_assert('init meta telt 37 projecten', (int) ($initResult['meta']['projects'] ?? 0) === 37);

@@ -375,9 +375,9 @@ test_assert('bc en mimir leveren hetzelfde overzicht (30, met ongeboekt)', speed
 test_assert('afgesloten telt Completed op Projecten', (speed_signature($mimir120Off)['closed']['closed'] ?? 0) === 1 && (speed_signature($mimir120Off)['closed']['total'] ?? 0) === 120);
 
 test_assert('120 projecten: één resolve-golf en één brongolf', $mimir120OffWaves === 2 && $mimir120OffSingles === 0, json_encode($mimir120OffSizes));
-test_assert('brongolf bundelt 3 posten + planning + Projecten', ($mimir120OffSizes[1] ?? 0) === 5, json_encode($mimir120OffSizes));
+test_assert('brongolf bundelt 3 posten + LVS_Contract_No-posten + planning + Projecten', ($mimir120OffSizes[1] ?? 0) === 6, json_encode($mimir120OffSizes));
 test_assert('ongeboekt voegt één artikelkaart toe ná de golf', $mimir120OnWaves === 2 && $mimir120OnSingles === 1, json_encode($mimir120OnSizes));
-test_assert('30 projecten blijven één brongolf', $mimir30Waves === 2 && ($mimir30Sizes[1] ?? 0) === 4, json_encode($mimir30Sizes));
+test_assert('30 projecten blijven één brongolf', $mimir30Waves === 2 && ($mimir30Sizes[1] ?? 0) === 5, json_encode($mimir30Sizes));
 test_assert(
     'logische tijd 120 zonder ongeboekt daalt',
     $mimir120OffLogical < $bc120OffCalls * 50 && $mimir120OffLogical === 100,

@@ -257,6 +257,8 @@ function project_load_resolve_one(
         }
         $projects = project_fetch_missing_by_nos($company, $jobNos, $projects, $ttl);
     } else {
+        [$projects, $workorders] = project_contract_scope($contractNo, $projects, $workorders);
+        $jobNos = project_collect_job_nos($projects, $workorders);
         $contractValue = is_array($parallel)
             ? $parallelContractValue
             : project_fetch_contract_value($company, $contractNo, $ttl);

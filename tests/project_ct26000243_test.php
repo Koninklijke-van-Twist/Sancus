@@ -472,7 +472,7 @@ try {
             $initPosts++;
         }
     }
-    test_assert('init bundelt posten één keer', $initPosts === 1, (string) $initPosts);
+    test_assert('init bundelt posten één keer (+1 LVS_Contract_No-posten)', $initPosts === 2, (string) $initPosts);
 } finally {
     if (is_array($initResult) && isset($initResult['result_id'])) {
         project_load_state_delete((string) $initResult['result_id']);
