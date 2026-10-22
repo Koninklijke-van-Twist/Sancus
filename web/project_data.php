@@ -37,6 +37,11 @@ const SANCUS_SEARCH_HISTORY_MAX_AGE = SANCUS_NIGHTLY_SEARCH_MAX_AGE;
 const SANCUS_JOB_FILTER_CHUNK = 40;
 // Zelfde bundel als het OData-filter, zodat verversen niet per twee projecten een call doet.
 const SANCUS_LOAD_JOB_CHUNK = SANCUS_JOB_FILTER_CHUNK;
+// Contractlijst: contractnummers per or-filter en Mímir-calls per golf
+const SANCUS_CONTRACT_BATCH_CHUNK = 40;
+const SANCUS_BATCH_WAVE = 3;
+// Contractlijst: aantal contracten per totalen-verzoek uit de browser
+const SANCUS_LIST_SUMMARY_GROUP = 8;
 
 /**
  * Functies
@@ -1543,6 +1548,19 @@ function project_contract_salesperson(string $company, string $customerNo, int $
  */
 function project_fetch_onderhoudscontract_nos_for_salesperson(string $company, string $salespersonCode, string $dateFrom = '', int $ttl = 3600): array
 {
+    return array_values(array_map(static function (array $row): string {
+        return $row['contract_no'];
+    }, project_fetch_onderhoudscontract_rows_for_salesperson($company, $salespersonCode, $dateFrom, $ttl)));
+}
+
+/**
+ * Zelfde bron als hierboven, met Customer_No en Starting_Date (al in de $select),
+ * zodat de contractlijst geen extra kopquery per bundel nodig heeft.
+ *
+ * @return array<string,array{contract_no:string,customer_no:string,starting_date:string}> sleutel = genormaliseerd nummer
+ */
+function project_fetch_onderhoudscontract_rows_for_salesperson(string $company, string $salespersonCode, string $dateFrom = '', int $ttl = 3600): array
+{
     $salespersonCode = trim($salespersonCode);
     if ($salespersonCode === '' || preg_match('/[\t\r\n]/', $salespersonCode) === 1) {
         return [];
@@ -1557,8 +1575,7 @@ function project_fetch_onderhoudscontract_nos_for_salesperson(string $company, s
         '$filter' => $filter,
     ], $ttl);
 
-    $contractNos = [];
-    $seen = [];
+    $contracts = [];
     foreach ($rows as $row) {
         if (!is_array($row)) {
             continue;
@@ -1568,14 +1585,17 @@ function project_fetch_onderhoudscontract_nos_for_salesperson(string $company, s
             continue;
         }
         $key = project_normalize_match_text($contractNo);
-        if (isset($seen[$key])) {
+        if (isset($contracts[$key])) {
             continue;
         }
-        $seen[$key] = true;
-        $contractNos[] = $contractNo;
+        $contracts[$key] = [
+            'contract_no' => $contractNo,
+            'customer_no' => project_odata_scalar_string($row['Customer_No'] ?? null),
+            'starting_date' => project_odata_scalar_string($row['Starting_Date'] ?? null),
+        ];
     }
 
-    return $contractNos;
+    return $contracts;
 }
 
 /**
@@ -4485,8 +4505,9 @@ function project_salesperson_contract_list(string $company, string $salespersonC
 {
     $contractNos = [];
     $seen = [];
+    $onderhoud = project_fetch_onderhoudscontract_rows_for_salesperson($company, $salespersonCode, '', $ttl);
     foreach ([
-        project_fetch_onderhoudscontract_nos_for_salesperson($company, $salespersonCode, '', $ttl),
+        array_column($onderhoud, 'contract_no'),
         project_fetch_contract_nos_for_salesperson($company, $salespersonCode, $ttl),
     ] as $sourceNos) {
         foreach ($sourceNos as $sourceNo) {
@@ -4508,7 +4529,21 @@ function project_salesperson_contract_list(string $company, string $salespersonC
         error_log('[Sancus] verkoper-terugval via klant mislukt: ' . substr($customerError->getMessage(), 0, 500));
     }
 
-    return project_merge_salesperson_contracts($contractNos, $customerContracts);
+    $merged = project_merge_salesperson_contracts($contractNos, $customerContracts);
+    foreach ($merged as $index => $contract) {
+        $extra = $onderhoud[project_normalize_match_text((string) $contract['contract_no'])] ?? null;
+        if ($extra === null) {
+            continue;
+        }
+        if (trim((string) ($contract['customer_no'] ?? '')) === '') {
+            $merged[$index]['customer_no'] = $extra['customer_no'];
+        }
+        if (trim((string) ($contract['starting_date'] ?? '')) === '') {
+            $merged[$index]['starting_date'] = $extra['starting_date'];
+        }
+    }
+
+    return $merged;
 }
 
 /**
@@ -4731,12 +4766,14 @@ function project_combined_contract_rows(
         return strnatcasecmp((string) $b['contract_no'], (string) $a['contract_no']);
     });
 
-    $rows = [];
-    foreach ($contracts as $contract) {
-        $contract += ['customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
-        $rows[] = $withMetrics
-            ? project_contract_summary_row($company, $contract, $ttl, $includeUnbookedCosts)
-            : $contract + ['metrics' => null, 'load_error' => false];
+    if ($withMetrics) {
+        // Gebundeld: geen volledig contractoverzicht per contract (#23)
+        $rows = project_contract_summary_rows_batched($company, $contracts, $ttl, $includeUnbookedCosts);
+    } else {
+        $rows = [];
+        foreach ($contracts as $contract) {
+            $rows[] = $contract + ['customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => '', 'metrics' => null, 'load_error' => false];
+        }
     }
     if ($closedFilter !== 'all') {
         $rows = array_values(array_filter($rows, static function (array $row) use ($closedFilter): bool {
@@ -4784,4 +4821,328 @@ function project_row_matches_closed_filter(array $row, string $filter): bool
     $fully = $total > 0 && (int) ($metrics['closed'] ?? 0) >= $total;
 
     return $filter === 'closed' ? $fully : !$fully;
+}
+
+/**
+ * Contractlijst (verkoper/klant/gecombineerd): alleen samenvattingen, gebundeld.
+ * In plaats van een volledig contractoverzicht per contract (N+1: ~6 calls per contract
+ * plus posten per project) gaan AppProjecten, AppWerkorders, AppMaintenanceContracts,
+ * ContractPlanningsregels en Projecten per bundel contracten in één or-filter op het
+ * contractnummer; posten en planningsregels per bundel projecten. De regels worden
+ * niet bewaard: alleen de kaarttotalen per contract. De details laden pas bij het openen.
+ * Mislukt een bundel, dan krijgen alleen die contracten load_error (rij 'onvolledig').
+ *
+ * @param list<array<string,mixed>> $contracts met contract_no, customer_no, customer_name, contract_value, starting_date
+ * @return list<array<string,mixed>> zelfde vorm als project_contract_summary_row, in invoervolgorde
+ */
+function project_contract_summary_rows_batched(string $company, array $contracts, int $ttl = 3600, bool $includeUnbookedCosts = false): array
+{
+    $byKey = [];
+    $order = [];
+    foreach ($contracts as $contract) {
+        $contract += ['customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
+        $contractNo = trim((string) ($contract['contract_no'] ?? ''));
+        $key = project_normalize_match_text($contractNo);
+        $order[] = [$key, $contract];
+        if ($contractNo !== '' && project_is_bc_code($contractNo)) {
+            $byKey[$key] = $contractNo;
+        }
+    }
+
+    $failed = [];
+    $projectsBy = [];
+    $workordersBy = [];
+    $headerBy = [];
+    $planningBy = [];
+    $projectenBy = [];
+
+    // Golf 1: vijf entiteiten per bundel contracten (or-keten op het contractnummer)
+    $calls = [];
+    $callContracts = [];
+    foreach (array_chunk(array_values($byKey), max(1, SANCUS_CONTRACT_BATCH_CHUNK)) as $index => $chunk) {
+        $specs = [
+            'projects' => ['AppProjecten', SANCUS_PROJECT_SELECT, 'KVT_Contract_No'],
+            'workorders' => ['AppWerkorders', SANCUS_WERKORDER_SELECT . ',Contract_No', 'Contract_No'],
+            'headers' => ['AppMaintenanceContracts', SANCUS_CONTRACT_BY_CUSTOMER_SELECT, 'Contract_No'],
+            'planning' => ['ContractPlanningsregels', SANCUS_PLANNING_SELECT . ',Contract_No', 'Contract_No'],
+            'projecten' => ['Projecten', SANCUS_PROJECTEN_STATUS_SELECT, 'KVT_Contract_No'],
+        ];
+        foreach ($specs as $kind => [$entity, $select, $field]) {
+            $label = $kind . '_' . $index;
+            $calls[$label] = ['kind' => $kind, 'field' => $field, 'entity' => $entity, 'query' => [
+                '$select' => $select,
+                '$filter' => project_odata_or_eq($field, $chunk),
+            ]];
+            $callContracts[$label] = $chunk;
+        }
+    }
+    foreach (project_fetch_batched_calls($company, $calls, $ttl) as $label => $rows) {
+        $call = $calls[$label];
+        if ($rows === null) {
+            foreach ($callContracts[$label] as $contractNo) {
+                $failed[project_normalize_match_text($contractNo)] = true;
+            }
+            continue;
+        }
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $key = project_normalize_match_text(project_odata_scalar_string($row[$call['field']] ?? null));
+            if (!isset($byKey[$key])) {
+                continue;
+            }
+            switch ($call['kind']) {
+                case 'projects':
+                    $project = project_normalize_project_row($row);
+                    if ($project['no'] !== '') {
+                        $projectsBy[$key][] = $project;
+                    }
+                    break;
+                case 'workorders':
+                    $workorder = project_normalize_workorder_row($row);
+                    if ($workorder['no'] !== '') {
+                        $workordersBy[$key][] = $workorder;
+                    }
+                    break;
+                case 'headers':
+                    $headerBy[$key] = $headerBy[$key] ?? $row;
+                    break;
+                case 'planning':
+                    $planningBy[$key][] = $row;
+                    break;
+                case 'projecten':
+                    $projectenBy[$key][] = $row;
+                    break;
+            }
+        }
+    }
+
+    // Projecten via werkorder-Job_No die niet via KVT_Contract_No kwamen (al gebundeld)
+    $jobsBy = [];
+    $allJobs = [];
+    $missing = [];
+    foreach ($byKey as $key => $contractNo) {
+        $projects = $projectsBy[$key] ?? [];
+        usort($projects, static function (array $a, array $b): int {
+            return strcmp((string) $b['no'], (string) $a['no']);
+        });
+        $projectsBy[$key] = $projects;
+        $workorders = $workordersBy[$key] ?? [];
+        usort($workorders, static function (array $a, array $b): int {
+            return strcmp((string) $a['no'], (string) $b['no']);
+        });
+        $workordersBy[$key] = $workorders;
+        $jobsBy[$key] = project_collect_job_nos($projects, $workorders);
+        $have = array_fill_keys(array_column($projects, 'no'), true);
+        foreach ($jobsBy[$key] as $jobNo) {
+            $allJobs[$jobNo] = true;
+            if (!isset($have[$jobNo]) && project_is_bc_code($jobNo)) {
+                $missing[$jobNo] = true;
+            }
+        }
+    }
+    if ($missing !== []) {
+        $extra = [];
+        foreach (project_fetch_by_nos($company, array_keys($missing), $ttl) as $project) {
+            $extra[(string) $project['no']] = $project;
+        }
+        foreach ($jobsBy as $key => $jobNos) {
+            $have = array_fill_keys(array_column($projectsBy[$key], 'no'), true);
+            foreach ($jobNos as $jobNo) {
+                if (!isset($have[$jobNo]) && isset($extra[$jobNo])) {
+                    $projectsBy[$key][] = $extra[$jobNo];
+                    $have[$jobNo] = true;
+                }
+            }
+        }
+    }
+
+    // Golf 2: posten (en optioneel ongeboekte planningsregels) per bundel projecten
+    $jobCalls = [];
+    $callJobs = [];
+    foreach (project_job_filter_chunks(array_keys($allJobs)) as $index => $chunk) {
+        $jobCalls['posten_' . $index] = ['kind' => 'posten', 'entity' => 'ProjectPosten', 'query' => [
+            '$select' => SANCUS_POSTEN_SELECT,
+            '$filter' => project_job_chunk_filter($chunk, '', 'Posting_Date', '', ''),
+            '$orderby' => 'Entry_No asc',
+        ]];
+        $callJobs['posten_' . $index] = $chunk;
+        if ($includeUnbookedCosts) {
+            $jobCalls['jobs_' . $index] = ['kind' => 'jobs', 'entity' => 'Job_Planning_Lines', 'query' => [
+                '$select' => SANCUS_JOB_PLANNING_SELECT,
+                '$filter' => project_job_chunk_filter($chunk, 'Qty_to_Transfer_to_Journal ne 0', 'Planning_Date', '', ''),
+                '$orderby' => 'Line_No asc',
+            ]];
+            $callJobs['jobs_' . $index] = $chunk;
+        }
+    }
+    $postenByJob = [];
+    $rawJobPlanning = [];
+    $failedJobs = [];
+    foreach (project_fetch_batched_calls($company, $jobCalls, $ttl) as $label => $rows) {
+        if ($rows === null) {
+            foreach ($callJobs[$label] as $jobNo) {
+                $failedJobs[$jobNo] = true;
+            }
+            continue;
+        }
+        $inChunk = array_fill_keys($callJobs[$label], true);
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $jobNo = project_odata_scalar_string($row['Job_No'] ?? null);
+            if ($jobNo === '' || !isset($inChunk[$jobNo])) {
+                continue;
+            }
+            if ($jobCalls[$label]['kind'] === 'posten') {
+                $postenByJob[$jobNo][] = project_normalize_posten_row($row);
+            } else {
+                $rawJobPlanning[] = $row;
+            }
+        }
+    }
+    $unbookedByJob = [];
+    if ($rawJobPlanning !== []) {
+        foreach (project_normalize_unbooked_cost_lines($company, $rawJobPlanning, $ttl) as $line) {
+            $unbookedByJob[(string) ($line['job_no'] ?? '')][] = $line;
+        }
+    }
+
+    $out = [];
+    foreach ($order as [$key, $contract]) {
+        $contractNo = (string) $contract['contract_no'];
+        $base = [
+            'contract_no' => $contractNo,
+            'customer_name' => (string) $contract['customer_name'],
+            'customer_no' => (string) $contract['customer_no'],
+            'contract_value' => $contract['contract_value'],
+            'starting_date' => (string) ($contract['starting_date'] ?? ''),
+        ];
+        $jobNos = $jobsBy[$key] ?? [];
+        $jobFailed = false;
+        foreach ($jobNos as $jobNo) {
+            if (isset($failedJobs[$jobNo])) {
+                $jobFailed = true;
+                break;
+            }
+        }
+        if (!isset($byKey[$key]) || isset($failed[$key]) || $jobFailed) {
+            $out[] = $base + ['metrics' => null, 'load_error' => true];
+            continue;
+        }
+        $projects = $projectsBy[$key] ?? [];
+        $workorders = $workordersBy[$key] ?? [];
+        $lines = [];
+        foreach ($jobNos as $jobNo) {
+            foreach ($postenByJob[$jobNo] ?? [] as $line) {
+                $lines[] = $line;
+            }
+        }
+        foreach ($planningBy[$key] ?? [] as $row) {
+            foreach (project_normalize_planning_row($row) as $line) {
+                $lines[] = $line;
+            }
+        }
+        foreach ($jobNos as $jobNo) {
+            foreach ($unbookedByJob[$jobNo] ?? [] as $line) {
+                $lines[] = $line;
+            }
+        }
+        $lines = project_supplement_unbooked_workorders($lines, $workorders);
+        $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
+        $countProjects = project_merge_projects_for_closed_stats($projectenBy[$key] ?? [], $projects);
+
+        $customerName = '';
+        $customerNo = '';
+        foreach ($projects as $project) {
+            if ($customerName === '' && trim((string) ($project['customer_name'] ?? '')) !== '') {
+                $customerName = trim((string) $project['customer_name']);
+            }
+            if ($customerNo === '' && trim((string) ($project['customer_no'] ?? '')) !== '') {
+                $customerNo = trim((string) $project['customer_no']);
+            }
+        }
+        $header = $headerBy[$key] ?? null;
+        $contractValue = is_array($header) && array_key_exists('KVT_Total_Sales_Price', $header)
+            ? (float) $header['KVT_Total_Sales_Price']
+            : null;
+
+        $out[] = [
+            'contract_no' => $contractNo,
+            'customer_name' => $customerName !== '' ? $customerName : $base['customer_name'],
+            'customer_no' => $customerNo !== '' ? $customerNo : $base['customer_no'],
+            'contract_value' => $contractValue ?? $base['contract_value'],
+            'starting_date' => $base['starting_date'],
+            'metrics' => project_header_metrics($countProjects, $lines),
+            'load_error' => false,
+        ];
+    }
+
+    return $out;
+}
+
+/**
+ * Voert onafhankelijke calls uit: via Mímir in golven van SANCUS_BATCH_WAVE tegelijk,
+ * anders (of als een golf faalt) één voor één. Een mislukte call geeft null.
+ *
+ * @param array<string,array{entity:string,query:array<string,mixed>}> $calls
+ * @return array<string,list<mixed>|null>
+ */
+function project_fetch_batched_calls(string $company, array $calls, int $ttl): array
+{
+    $out = [];
+    foreach (array_chunk($calls, max(1, SANCUS_BATCH_WAVE), true) as $wave) {
+        $parallel = project_fetch_rows_parallel($company, $wave, $ttl);
+        foreach ($wave as $label => $call) {
+            if (is_array($parallel) && is_array($parallel[$label] ?? null)) {
+                $out[$label] = $parallel[$label];
+                continue;
+            }
+            try {
+                $out[$label] = project_fetch_rows($company, (string) $call['entity'], $call['query'], $ttl);
+            } catch (Throwable $error) {
+                error_log('[Sancus] ' . $call['entity'] . ' gebundeld ophalen mislukt: ' . substr($error->getMessage(), 0, 500));
+                $out[$label] = null;
+            }
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Vult klant en startdatum van lijstrijen aan uit AppMaintenanceContracts (gebundeld),
+ * zonder posten of projecten te laden.
+ *
+ * @param list<array<string,mixed>> $rows
+ * @return list<array<string,mixed>>
+ */
+function project_fill_contract_list_headers(string $company, array $rows, int $ttl = 3600): array
+{
+    $missing = [];
+    foreach ($rows as $row) {
+        // Klantnaam volgt uit de totalen (projecten); alleen zonder klant of startdatum de kop ophalen
+        if (trim((string) ($row['customer_no'] ?? '')) === '' || trim((string) ($row['starting_date'] ?? '')) === '') {
+            $missing[] = (string) ($row['contract_no'] ?? '');
+        }
+    }
+    if ($missing === []) {
+        return $rows;
+    }
+    $headers = project_fetch_contract_headers_by_nos($company, $missing, $ttl);
+    foreach ($rows as $index => $row) {
+        $header = $headers[project_normalize_match_text((string) ($row['contract_no'] ?? ''))] ?? null;
+        if (!is_array($header)) {
+            continue;
+        }
+        foreach (['customer_no', 'customer_name', 'starting_date'] as $field) {
+            if (trim((string) ($row[$field] ?? '')) === '') {
+                $rows[$index][$field] = (string) ($header[$field] ?? '');
+            }
+        }
+    }
+
+    return $rows;
 }
