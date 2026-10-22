@@ -24,6 +24,22 @@ $GLOBALS['SANCUS_ODATA_BC_FETCH'] = static function (string $url) use (&$calls):
             ['Code' => 'ANNA', 'Name' => 'Anna Bakker'],
         ];
     }
+    if (str_contains($decoded, '/Onderhoudscontract?')) {
+        if (str_contains($decoded, "Salesperson_Code eq 'JANSEN'")) {
+            $rows = [
+                ['Contract_No' => 'CT26000184', 'Customer_No' => 'K1001', 'Salesperson_Code' => 'JANSEN', 'Starting_Date' => '2026-01-01'],
+                ['Contract_No' => 'CT26000500', 'Customer_No' => 'K1001', 'Salesperson_Code' => 'JANSEN', 'Starting_Date' => '2026-02-01'],
+            ];
+            if (str_contains($decoded, 'Starting_Date ge 2026-06-01')) {
+                return [];
+            }
+            return $rows;
+        }
+        if (str_contains($decoded, "Contract_No eq 'CT26000500'")) {
+            return [['Contract_No' => 'CT26000500', 'Salesperson_Code' => 'VRIES']];
+        }
+        return [];
+    }
     if (str_contains($decoded, '/Projecten?')) {
         if (str_contains($decoded, "KVT_Sales_Person_Code eq 'JANSEN'")) {
             return [
@@ -332,8 +348,8 @@ foreach ($overview['rows'] as $candidate) {
     }
 }
 test_assert(
-    'drie ontdubbelde contracten',
-    count($byContract) === 3 && isset($byContract['CT26000184'], $byContract['CT26000210'], $byContract['CT26000300']),
+    'vier ontdubbelde contracten (Onderhoudscontract + projecten + klant)',
+    count($byContract) === 4 && isset($byContract['CT26000184'], $byContract['CT26000210'], $byContract['CT26000300'], $byContract['CT26000500']),
     json_encode(array_keys($byContract))
 );
 $row = $byContract['CT26000184'] ?? [];
@@ -478,6 +494,15 @@ test_assert('accountmanager via klant', $manager['code'] === 'JANSEN' && $manage
 $noManager = project_contract_salesperson('Koninklijke van Twist', 'K9999', 60);
 test_assert('klant zonder verkoper', $noManager === ['code' => '', 'name' => ''], json_encode($noManager));
 test_assert('lege klant', project_contract_salesperson('Koninklijke van Twist', '', 60)['code'] === '');
+$ohNos = project_fetch_onderhoudscontract_nos_for_salesperson('Koninklijke van Twist', 'JANSEN', '', 60);
+test_assert('onderhoudscontract op verkoper', $ohNos === ['CT26000184', 'CT26000500'], json_encode($ohNos));
+test_assert('onderhoudscontract met startdatum', project_fetch_onderhoudscontract_nos_for_salesperson('Koninklijke van Twist', 'JANSEN', '2026-06-01', 60) === []);
+$ohJoined = implode("\n", $calls);
+test_assert('filter Starting_Date ge', str_contains($ohJoined, "Salesperson_Code eq 'JANSEN' and Starting_Date ge 2026-06-01"));
+$ohManager = project_contract_salesperson('Koninklijke van Twist', 'K1001', 60, 'CT26000500');
+test_assert('accountmanager uit onderhoudscontract wint', $ohManager['code'] === 'VRIES' && $ohManager['name'] === 'Piet de Vries', json_encode($ohManager));
+$fbManager = project_contract_salesperson('Koninklijke van Twist', 'K1001', 60, 'CT26000999');
+test_assert('terugval op klantkaart', $fbManager['code'] === 'JANSEN', json_encode($fbManager));
 test_assert('kaart accountmanager in index', str_contains($index, "LOC('sancus.meta.account_manager')") && str_contains($index, "LOC('sancus.meta.account_manager_none')"));
 test_assert('lokalisatie accountmanager', LOC('sancus.meta.account_manager') !== 'sancus.meta.account_manager');
 

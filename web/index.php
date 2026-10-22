@@ -393,7 +393,7 @@ try {
                         $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
                     }
                     try {
-                        $accountManager = project_contract_salesperson($company, $customerNo, SANCUS_NIGHTLY_CACHE_TTL);
+                        $accountManager = project_contract_salesperson($company, $customerNo, SANCUS_NIGHTLY_CACHE_TTL, $contractNo);
                     } catch (Throwable $e) {
                         error_log('[Sancus] accountmanager ophalen mislukt: ' . $e->getMessage());
                     }
