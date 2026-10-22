@@ -309,3 +309,128 @@ sancusSetupSuggest('sancus-search-salesperson', 'sancus-suggest-salesperson', 's
 sancusSetupSuggest('sancus-search-customer', 'sancus-suggest-customer', 'customer');
     <?php
 }
+
+/**
+ * Groene Excel-knop voor een tabel (id). Export via portal_render_xlsx_script().
+ */
+function portal_xlsx_button(string $tableId): string
+{
+    return '<button type="button" class="sancus-btn sancus-btn-excel" data-xlsx-table="' . portal_h($tableId) . '"'
+        . ' style="background:#1d6f42;border-color:#1d6f42;color:#fff;margin:0 8px 8px 0;"'
+        . ' title="' . portal_h(LOC('sancus.export.title')) . '">' . portal_h(LOC('sancus.btn.excel')) . '</button>';
+}
+
+/**
+ * Leest de tabel zoals getoond (zichtbare rijen, colspan, data-xv/data-xt voor ruwe
+ * waarden en typen) plus de actieve filters uit het zoekformulier en post naar export.php.
+ */
+function portal_render_xlsx_script(): void
+{
+    ?>
+<script>
+(function () {
+    function clean(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+    function cellText(td) {
+        var parts = [];
+        var spans = td.querySelectorAll('span');
+        if (spans.length && td.children.length === spans.length) {
+            spans.forEach(function (span) {
+                var t = clean(span.textContent);
+                if (t) {
+                    parts.push(t);
+                }
+            });
+            return parts.join(' · ');
+        }
+        return clean(td.textContent);
+    }
+    function activeFilters() {
+        var form = document.querySelector('form.sancus-form');
+        var out = [];
+        if (!form) {
+            return out;
+        }
+        form.querySelectorAll('label').forEach(function (label) {
+            var field = label.querySelector('input:not([type=hidden]), select');
+            if (!field) {
+                return;
+            }
+            var name = '';
+            label.childNodes.forEach(function (node) {
+                if (node.nodeType === 3) {
+                    name += node.textContent;
+                }
+            });
+            var value = field.tagName === 'SELECT'
+                ? clean(field.options[field.selectedIndex] ? field.options[field.selectedIndex].textContent : '')
+                : clean(field.value);
+            if (field.type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                value = value.slice(8, 10) + '-' + value.slice(5, 7) + '-' + value.slice(0, 4);
+            }
+            if (value) {
+                out.push([clean(name), value]);
+            }
+        });
+        return out;
+    }
+    function collect(table) {
+        var columns = [];
+        table.querySelectorAll('thead th').forEach(function (th) {
+            columns.push({ label: clean(th.textContent), type: th.getAttribute('data-xlsx-type') || 'text' });
+        });
+        var rows = [];
+        table.querySelectorAll('tbody tr').forEach(function (tr) {
+            if (tr.offsetParent === null && tr.getClientRects().length === 0) {
+                return; // ingeklapt of verborgen: niet zichtbaar, dus niet exporteren
+            }
+            var row = [];
+            Array.prototype.forEach.call(tr.children, function (td) {
+                var col = columns[row.length] || { type: 'text' };
+                if (td.hasAttribute('data-xv')) {
+                    row.push({ v: td.getAttribute('data-xv'), t: td.getAttribute('data-xt') || col.type });
+                } else if (td.hasAttribute('data-xt')) {
+                    row.push({ v: cellText(td), t: td.getAttribute('data-xt') });
+                } else {
+                    var text = cellText(td);
+                    row.push(col.type === 'text' ? text : { v: text, t: col.type });
+                }
+                var span = parseInt(td.getAttribute('colspan') || '1', 10);
+                for (var i = 1; i < span; i++) {
+                    row.push('');
+                }
+            });
+            rows.push(row);
+        });
+        return { columns: columns, rows: rows };
+    }
+    document.addEventListener('click', function (event) {
+        var button = event.target instanceof Element ? event.target.closest('[data-xlsx-table]') : null;
+        if (!button) {
+            return;
+        }
+        var table = document.getElementById(button.getAttribute('data-xlsx-table'));
+        if (!table) {
+            return;
+        }
+        var data = collect(table);
+        data.title = table.getAttribute('data-xlsx-title') || document.title || 'Sancus';
+        data.filters = activeFilters();
+        var form = document.createElement('form');
+        form.method = 'post';
+        form.action = 'export.php';
+        form.style.display = 'none';
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'payload';
+        input.value = JSON.stringify(data);
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
+    });
+})();
+</script>
+    <?php
+}

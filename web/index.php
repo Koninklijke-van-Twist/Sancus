@@ -83,7 +83,7 @@ function portal_amount_cell(float $amount, string $kind, string $extraClass = ''
     if ($subLabel !== '') {
         $classes .= ' has-amount-sub';
     }
-    $html = '<td class="' . portal_h($classes) . '">';
+    $html = '<td class="' . portal_h($classes) . '" data-xv="' . portal_h(sprintf('%.2F', $amount)) . '" data-xt="money">';
     $html .= '<span class="amount-value">' . portal_h(portal_format_amount($amount)) . '</span>';
     if ($subLabel !== '') {
         $html .= '<span class="amount-sub">' . portal_h($subLabel) . '</span>';
@@ -99,7 +99,7 @@ function portal_profit_cell(float $cost, float $revenue, bool $show): string
 
     $profit = $revenue - $cost;
     $classes = 'num profit-cell ' . portal_amount_class($profit, 'profit');
-    $html = '<td class="' . portal_h(trim($classes)) . '">';
+    $html = '<td class="' . portal_h(trim($classes)) . '" data-xv="' . portal_h(sprintf('%.2F', $profit)) . '" data-xt="money">';
     $html .= '<span class="profit-amount">' . portal_h(portal_format_amount($profit)) . '</span>';
 
     if (abs($revenue) >= 0.00001) {
@@ -1059,11 +1059,12 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.empty.posten')) ?></p>
             <?php else: ?>
                 <div class="sancus-table-toolbar">
+                    <?= portal_xlsx_button('sancus-posten-table') ?>
                     <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-collapse-all"><?= portal_h(LOC('sancus.btn.collapse_all')) ?></button>
                     <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-expand-all"><?= portal_h(LOC('sancus.btn.expand_all')) ?></button>
                 </div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table" id="sancus-posten-table">
+                    <table class="sancus-table" id="sancus-posten-table" data-xlsx-title="<?= portal_h($contractNo !== '' ? $contractNo : 'Projectposten') ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.col.details')) ?></th>
@@ -1072,10 +1073,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                 <th><?= portal_h(LOC('sancus.col.workorder')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.type')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.cost')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.profit')) ?></th>
+                                <th class="num" data-xlsx-type="number"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.cost')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.profit')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1137,14 +1138,14 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                     }
                                 ?>>
                                     <?php if ($isLine): ?>
-                                        <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
+                                        <td class="line-date" data-xt="date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
                                     <?php elseif ($showDualWorkOrderDates): ?>
                                         <td class="workorder-dates<?= portal_h($detailsToggleClass) ?>">
                                             <span class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></span>
                                             <span class="line-date"><?= portal_h($postingDate) ?></span>
                                         </td>
                                     <?php elseif ($showWorkOrderStart): ?>
-                                        <td class="workorder-start-date<?= portal_h($detailsToggleClass) ?>"><?= portal_h($workOrderStartDate) ?></td>
+                                        <td class="workorder-start-date<?= portal_h($detailsToggleClass) ?>" data-xt="date"><?= portal_h($workOrderStartDate) ?></td>
                                     <?php else: ?>
                                         <?= portal_group_cell(
                                             (string) ($row['details'] ?? ''),
@@ -1178,7 +1179,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                         ) ?>
                                     <?php endif; ?>
                                     <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= ($isLine || $description !== '') ? portal_h(portal_display_value($description)) : '' ?></td>
-                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"><?php
+                                    <?php
+                                        $showQty = $qty !== null && !$isUnbooked && ($isLine || !empty($row['show_type']));
+                                    ?>
+                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"<?= $showQty ? ' data-xv="' . portal_h((string) (float) $qty) . '" data-xt="number"' : '' ?>><?php
                                         if ($isLine && !$isUnbooked && $qty !== null) {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         } elseif (!$isLine && $qty !== null && !empty($row['show_type']) && !$isUnbooked) {
@@ -1875,6 +1879,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
 })();
 <?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>

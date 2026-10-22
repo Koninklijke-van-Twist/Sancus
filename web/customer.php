@@ -302,14 +302,15 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($groups === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.customer.empty')) ?></p>
             <?php else: ?>
+                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-customer-contracts') ?></div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table">
+                    <table class="sancus-table" id="sancus-customer-contracts" data-xlsx-title="<?= portal_h($pageTitle) ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.status')) ?></th>
-                                <th><?= portal_h(LOC('sancus.col.starting_date')) ?></th>
+                                <th data-xlsx-type="date"><?= portal_h(LOC('sancus.col.starting_date')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -641,6 +642,7 @@ $dataAgeLabel = $dataCachedAt !== null
 })();
 <?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>

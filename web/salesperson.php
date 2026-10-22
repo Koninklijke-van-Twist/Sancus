@@ -25,7 +25,7 @@ function salesperson_money_cell(float $amount, string $kind, string $sub = ''): 
     if ($sub !== '') {
         $classes .= ' has-amount-sub';
     }
-    $html = '<td class="' . portal_h($classes) . '">';
+    $html = '<td class="' . portal_h($classes) . '" data-xv="' . portal_h(sprintf('%.2F', $amount)) . '" data-xt="money">';
     $html .= '<span class="amount-value">' . portal_h(portal_format_amount($amount)) . '</span>';
     if ($sub !== '') {
         $html .= '<span class="amount-sub">' . portal_h($sub) . '</span>';
@@ -328,21 +328,22 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($rows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.salesperson.empty')) ?></p>
             <?php else: ?>
+                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-contract-list') ?></div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table">
+                    <table class="sancus-table" id="sancus-contract-list" data-xlsx-title="<?= portal_h($pageTitle) ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.meta.customer')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.profit')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.material')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.hours')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.kilometers')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.closed_pct')) ?></th>
+                                <th class="num" data-xlsx-type="int"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.profit')) ?></th>
+                                <th class="num" data-xlsx-type="percent"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.material')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.hours')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.kilometers')) ?></th>
+                                <th class="num" data-xlsx-type="percent"><?= portal_h(LOC('sancus.col.closed_pct')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -382,15 +383,15 @@ $dataAgeLabel = $dataCachedAt !== null
                                                 ? LOC('sancus.meta.contract') . ': ' . portal_format_amount((float) $contractValue)
                                                 : '';
                                         ?>
-                                        <td class="num"><?= portal_h((string) ($metrics['project_count'] ?? 0)) ?></td>
+                                        <td class="num" data-xv="<?= (int) ($metrics['project_count'] ?? 0) ?>" data-xt="int"><?= portal_h((string) ($metrics['project_count'] ?? 0)) ?></td>
                                         <?= salesperson_money_cell((float) $metrics['cost'], 'cost') ?>
                                         <?= salesperson_money_cell((float) $metrics['revenue'], 'revenue', $revenueSub) ?>
                                         <?= salesperson_money_cell((float) $metrics['profit'], 'profit') ?>
-                                        <td class="num <?= portal_h($profitPct === null ? 'amount-zero' : portal_amount_class((float) $profitPct, 'profit')) ?>"><?= portal_h(portal_format_percent($profitPct)) ?></td>
+                                        <td class="num <?= portal_h($profitPct === null ? 'amount-zero' : portal_amount_class((float) $profitPct, 'profit')) ?>"<?= $profitPct !== null ? ' data-xv="' . portal_h(sprintf('%.6F', (float) $profitPct / 100)) . '" data-xt="percent"' : '' ?>><?= portal_h(portal_format_percent($profitPct)) ?></td>
                                         <?= salesperson_money_cell((float) $metrics['material_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['material_qty'], 'Materiaal')) ?>
                                         <?= salesperson_money_cell((float) $metrics['hours_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['hours_qty'], 'Uren')) ?>
                                         <?= salesperson_money_cell((float) $metrics['kilometers_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['kilometers_qty'], 'Kilometers')) ?>
-                                        <td class="num"><?= portal_h(LOC('sancus.meta.closed_value', (int) $metrics['closed_percent'], (int) $metrics['closed'], (int) $metrics['closed_total'])) ?></td>
+                                        <td class="num" data-xv="<?= portal_h(sprintf('%.6F', (int) $metrics['closed_total'] > 0 ? (int) $metrics['closed'] / (int) $metrics['closed_total'] : 0)) ?>" data-xt="percent"><?= portal_h(LOC('sancus.meta.closed_value', (int) $metrics['closed_percent'], (int) $metrics['closed'], (int) $metrics['closed_total'])) ?></td>
                                     <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
@@ -688,6 +689,7 @@ $dataAgeLabel = $dataCachedAt !== null
 })();
 <?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>
