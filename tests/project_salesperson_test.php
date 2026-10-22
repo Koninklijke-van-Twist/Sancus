@@ -75,6 +75,12 @@ $GLOBALS['SANCUS_ODATA_BC_FETCH'] = static function (string $url) use (&$calls):
         return [];
     }
     if (str_contains($decoded, 'AppCustomerCard')) {
+        if (str_contains($decoded, "No eq 'K1001'")) {
+            return [['No' => 'K1001', 'Name' => 'Klant', 'Salesperson_Code' => 'JANSEN']];
+        }
+        if (str_contains($decoded, "No eq 'K9999'")) {
+            return [['No' => 'K9999', 'Name' => 'Klant', 'Salesperson_Code' => '']];
+        }
         if (!str_contains($decoded, "Salesperson_Code eq 'JANSEN'")) {
             return [];
         }
@@ -466,16 +472,12 @@ test_assert('salesperson via logincheck', str_contains($salespersonPage, "requir
 test_assert('analytics.php niet includen', preg_match('/require(?:_once)?\s*\(?\s*[\'\"].*analytics\.php/', $salespersonPage) !== 1);
 test_assert('rij opent het contract', str_contains($salespersonPage, "'contract' => \$contractNo"));
 
-// Accountmanager-kaart: verkoper van het contract via Projecten.KVT_Sales_Person_Code
-test_assert('meest voorkomende verkoper wint', project_pick_contract_salesperson_code([
-    ['KVT_Sales_Person_Code' => 'VRIES'],
-    ['KVT_Sales_Person_Code' => 'JANSEN'],
-    ['KVT_Sales_Person_Code' => 'jansen'],
-    ['KVT_Sales_Person_Code' => ''],
-]) === 'JANSEN');
-test_assert('geen verkoper is leeg', project_pick_contract_salesperson_code([['KVT_Sales_Person_Code' => ''], []]) === '');
-$noManager = project_contract_salesperson('Koninklijke van Twist', 'CT26000300', 60);
-test_assert('contract zonder verkoper', $noManager === ['code' => '', 'name' => ''], json_encode($noManager));
+// Accountmanager-kaart: AppCustomerCard.Salesperson_Code van de klant
+$manager = project_contract_salesperson('Koninklijke van Twist', 'K1001', 60);
+test_assert('accountmanager via klant', $manager['code'] === 'JANSEN' && $manager['name'] === 'Jan Jansen', json_encode($manager));
+$noManager = project_contract_salesperson('Koninklijke van Twist', 'K9999', 60);
+test_assert('klant zonder verkoper', $noManager === ['code' => '', 'name' => ''], json_encode($noManager));
+test_assert('lege klant', project_contract_salesperson('Koninklijke van Twist', '', 60)['code'] === '');
 test_assert('kaart accountmanager in index', str_contains($index, "LOC('sancus.meta.account_manager')") && str_contains($index, "LOC('sancus.meta.account_manager_none')"));
 test_assert('lokalisatie accountmanager', LOC('sancus.meta.account_manager') !== 'sancus.meta.account_manager');
 

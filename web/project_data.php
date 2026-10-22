@@ -1492,59 +1492,29 @@ function project_projects_for_closed_card(string $company, string $contractNo, a
 }
 
 /**
- * Kiest de verkoper van een contract uit Projecten-rijen (KVT_Sales_Person_Code).
- * De meest voorkomende niet-lege code wint; bij gelijkspel de eerst gevonden.
- *
- * @param list<array<string,mixed>> $rows
- */
-function project_pick_contract_salesperson_code(array $rows): string
-{
-    $counts = [];
-    $codes = [];
-    foreach ($rows as $row) {
-        if (!is_array($row)) {
-            continue;
-        }
-        $code = project_odata_scalar_string($row['KVT_Sales_Person_Code'] ?? null);
-        if ($code === '') {
-            continue;
-        }
-        $key = strtoupper($code);
-        if (!isset($counts[$key])) {
-            $counts[$key] = 0;
-            $codes[$key] = $code;
-        }
-        $counts[$key]++;
-    }
-    $best = '';
-    $bestCount = 0;
-    foreach ($counts as $key => $count) {
-        if ($count > $bestCount) {
-            $best = $codes[$key];
-            $bestCount = $count;
-        }
-    }
-
-    return $best;
-}
-
-/**
- * Accountmanager (verkoper) van een contract via Projecten.KVT_Sales_Person_Code,
- * met de naam uit SalespersonPurchaserCard. Lege code = geen accountmanager.
+ * Accountmanager van een contract: AppCustomerCard.Salesperson_Code van de klant
+ * (Customer_No van het contract), met de naam uit SalespersonPurchaserCard.
+ * Lege code = geen accountmanager.
  *
  * @return array{code:string,name:string}
  */
-function project_contract_salesperson(string $company, string $contractNo, int $ttl = 3600): array
+function project_contract_salesperson(string $company, string $customerNo, int $ttl = 3600): array
 {
-    $contractNo = trim($contractNo);
-    if (!project_is_bc_code($contractNo)) {
+    $customerNo = trim($customerNo);
+    if ($customerNo === '' || preg_match('/[\t\r\n]/', $customerNo) === 1) {
         return ['code' => '', 'name' => ''];
     }
-    $rows = project_try_fetch_rows($company, 'Projecten', [
-        '$select' => SANCUS_PROJECTEN_BY_SALESPERSON_SELECT,
-        '$filter' => "KVT_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
+    $rows = project_try_fetch_rows($company, 'AppCustomerCard', [
+        '$select' => SANCUS_CUSTOMER_SALESPERSON_SELECT,
+        '$filter' => "No eq '" . project_escape_odata_string($customerNo) . "'",
     ], $ttl);
-    $code = project_pick_contract_salesperson_code($rows);
+    $code = '';
+    foreach ($rows as $row) {
+        if (is_array($row)) {
+            $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
+            break;
+        }
+    }
     if ($code === '') {
         return ['code' => '', 'name' => ''];
     }
