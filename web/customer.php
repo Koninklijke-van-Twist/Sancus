@@ -73,6 +73,11 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = (string) ($companies[0] ?? '');
 }
 
+// Sessie alleen lezen: lock vrijgeven vóór BC/Mímir-fetches, anders wacht een tweede tab (#25)
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
+
 $customerNo = trim((string) ($_GET['customer'] ?? ''));
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
 $forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);

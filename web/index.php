@@ -186,6 +186,9 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
     $loadId = trim((string) ($_REQUEST['load_id'] ?? ''));
     $stepEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
     $stepPrefs = $stepEmail !== '' ? loadUserPrefs($stepEmail) : [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
     try {
         $payload = project_load_run_step($loadId, $step, [
             'company' => $stepCompany,
@@ -270,6 +273,11 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = $savedCompany;
 } else {
     $company = (string) ($companies[0] ?? '');
+}
+
+// Sessie alleen lezen: lock vrijgeven vóór BC/Mímir-fetches, anders wacht een tweede tab (#25)
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
 }
 
 if (trim((string) ($_REQUEST['action'] ?? '')) === 'salesperson_suggest') {
