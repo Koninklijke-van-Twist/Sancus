@@ -155,6 +155,14 @@ test_assert('doorverwijzing naar de lijst heeft een waakhond met window.stop', s
 
 test_assert('export: klantnaam via data-xv, Klantnummer- en Verkoper-kolom, spinner echt verborgen', str_contains($sp, 'sancus-customerno-cell') && str_contains($sp, "LOC('sancus.col.customer_no')") && str_contains($sp, "setAttribute('data-xv', item.customer_name") && str_contains($sp, '.sancus-list-progress[hidden] { display: none') && str_contains($sp, "progress.style.display = 'none'"));
 
+// Verkoop-posten: Mímir levert Line_Amount (geen Line_Amount_LCY); moet meetellen als Gefactureerd (bug na #26)
+$sale = project_normalize_posten_row(['Entry_No' => 21767, 'Job_No' => 'PRJ2600660', 'Entry_Type' => 'Sale', 'Type' => 'Resource', 'Document_No' => 'S126002035', 'Quantity' => -1, 'Total_Cost_LCY' => 0, 'Line_Amount' => -1687.12]);
+test_assert('verkooppost zonder Line_Amount_LCY telt mee als gefactureerd', abs($sale['revenue'] - 1687.12) < 0.001 && $sale['type_label'] === 'Gefactureerd');
+$saleLcy = project_normalize_posten_row(['Entry_Type' => 'Sale', 'Line_Amount_LCY' => -100.0, 'Line_Amount' => -90.0]);
+test_assert('Line_Amount_LCY wint als het er wel is', abs($saleLcy['revenue'] - 100.0) < 0.001);
+test_assert('posten-select vraagt Line_Amount op', str_contains(SANCUS_POSTEN_SELECT, ',Line_Amount\'') || str_ends_with(SANCUS_POSTEN_SELECT, ',Line_Amount'));
+test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v2' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
+
 echo $failures === 0 ? "\nAlle tests geslaagd.\n" : "\n{$failures} test(s) mislukt.\n";
 exit($failures === 0 ? 0 : 1);
 

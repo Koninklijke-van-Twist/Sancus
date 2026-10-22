@@ -10,7 +10,9 @@ require_once __DIR__ . '/odata.php';
 /**
  * Constants
  */
-const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY';
+// v2: Verkoop-posten tellen mee (Line_Amount); oude lijsttotalen vervallen
+const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v2';
+const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY,Line_Amount';
 const SANCUS_PROJECT_SELECT = 'No,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
 const SANCUS_JOB_PLANNING_SELECT = 'Job_No,Line_No,Type,No,Description,Planning_Date,Qty_to_Transfer_to_Journal,Unit_Cost_LCY,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No';
@@ -1923,8 +1925,13 @@ function project_normalize_posten_row(array $row): array
     $baseTypeLabel = project_line_base_type_label($type, $workTypeCode);
     $typeLabel = project_line_type_label($type, $workTypeCode, $entryType);
     $cost = project_odata_scalar_float($row['Total_Cost_LCY'] ?? 0);
-    // Line_Amount_LCY komt als negatief uit BC; we tonen opbrengsten positief
-    $revenue = -1.0 * project_odata_scalar_float($row['Line_Amount_LCY'] ?? 0);
+    // Opbrengst komt als negatief uit BC; we tonen opbrengsten positief.
+    // ProjectPosten levert via Mímir geen Line_Amount_LCY (veld ontbreekt), alleen Line_Amount:
+    // daardoor telden Verkoop-posten als 0. LCY-veld wint als het er wel is.
+    $amountRaw = array_key_exists('Line_Amount_LCY', $row) && $row['Line_Amount_LCY'] !== null
+        ? $row['Line_Amount_LCY']
+        : ($row['Line_Amount'] ?? 0);
+    $revenue = -1.0 * project_odata_scalar_float($amountRaw);
 
     // Boekingssoort bepaalt welke bedragen meetellen
     if (strcasecmp($entryType, 'Gebruik') === 0 || strcasecmp($entryType, 'Usage') === 0) {
@@ -5257,7 +5264,7 @@ function project_fill_contract_list_headers(string $company, array $rows, int $t
  */
 function project_list_summary_cache_path(string $company, string $contractNo, bool $includeUnbookedCosts): string
 {
-    return __DIR__ . '/data/list_summary/' . sha1($company . "\n" . project_normalize_match_text($contractNo) . "\n" . ($includeUnbookedCosts ? '1' : '0')) . '.json';
+    return __DIR__ . '/data/list_summary/' . sha1(SANCUS_LIST_SUMMARY_CACHE_VERSION . "\n" . $company . "\n" . project_normalize_match_text($contractNo) . "\n" . ($includeUnbookedCosts ? '1' : '0')) . '.json';
 }
 
 /**
