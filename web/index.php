@@ -334,6 +334,7 @@ $totalKilometersMoney = 0.0;
 $closedCount = 0;
 $closedTotal = 0;
 $closedPercent = 0;
+$accountManager = ['code' => '', 'name' => ''];
 $asyncLoad = false;
 $dataCachedAt = null;
 
@@ -390,6 +391,11 @@ try {
                         $countProjects = $overview['count_projects'];
                     } else {
                         $countProjects = project_projects_for_closed_card($company, $contractNo, $projects, SANCUS_NIGHTLY_CACHE_TTL);
+                    }
+                    try {
+                        $accountManager = project_contract_salesperson($company, $contractNo, SANCUS_NIGHTLY_CACHE_TTL);
+                    } catch (Throwable $e) {
+                        error_log('[Sancus] accountmanager ophalen mislukt: ' . $e->getMessage());
                     }
                 } finally {
                     if ($forceRefresh) {
@@ -530,6 +536,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             font-variant-numeric: tabular-nums;
         }
         .sancus-kpi-value.amount-cost { color: var(--kvt-danger); }
+        .sancus-kpi.sancus-kpi-missing { border-color: var(--kvt-danger); background: #fef2f2; }
         .sancus-kpi-value.amount-revenue { color: #15803d; }
         .sancus-kpi-value.amount-zero { color: #9ca3af; }
         .sancus-kpi-sub {
@@ -1034,6 +1041,18 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.closed')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(LOC('sancus.meta.closed_value', $closedPercent, $closedCount, $closedTotal)) ?></span>
+                </div>
+                <?php $accountManagerLabel = $accountManager['name'] !== '' ? $accountManager['name'] : $accountManager['code']; ?>
+                <div class="sancus-kpi<?= $accountManagerLabel === '' ? ' sancus-kpi-missing' : '' ?>">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.account_manager')) ?></span>
+                    <?php if ($accountManagerLabel === ''): ?>
+                        <span class="sancus-kpi-value amount-cost"><?= portal_h(LOC('sancus.meta.account_manager_none')) ?></span>
+                    <?php else: ?>
+                        <span class="sancus-kpi-value"><?= portal_h($accountManagerLabel) ?></span>
+                        <?php if ($accountManager['name'] !== ''): ?>
+                            <span class="sancus-kpi-sub"><?= portal_h($accountManager['code']) ?></span>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
 

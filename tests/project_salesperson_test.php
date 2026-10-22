@@ -466,6 +466,19 @@ test_assert('salesperson via logincheck', str_contains($salespersonPage, "requir
 test_assert('analytics.php niet includen', preg_match('/require(?:_once)?\s*\(?\s*[\'\"].*analytics\.php/', $salespersonPage) !== 1);
 test_assert('rij opent het contract', str_contains($salespersonPage, "'contract' => \$contractNo"));
 
+// Accountmanager-kaart: verkoper van het contract via Projecten.KVT_Sales_Person_Code
+test_assert('meest voorkomende verkoper wint', project_pick_contract_salesperson_code([
+    ['KVT_Sales_Person_Code' => 'VRIES'],
+    ['KVT_Sales_Person_Code' => 'JANSEN'],
+    ['KVT_Sales_Person_Code' => 'jansen'],
+    ['KVT_Sales_Person_Code' => ''],
+]) === 'JANSEN');
+test_assert('geen verkoper is leeg', project_pick_contract_salesperson_code([['KVT_Sales_Person_Code' => ''], []]) === '');
+$noManager = project_contract_salesperson('Koninklijke van Twist', 'CT26000300', 60);
+test_assert('contract zonder verkoper', $noManager === ['code' => '', 'name' => ''], json_encode($noManager));
+test_assert('kaart accountmanager in index', str_contains($index, "LOC('sancus.meta.account_manager')") && str_contains($index, "LOC('sancus.meta.account_manager_none')"));
+test_assert('lokalisatie accountmanager', LOC('sancus.meta.account_manager') !== 'sancus.meta.account_manager');
+
 if ($failures > 0) {
     fwrite(STDERR, $failures . " failed\n");
     exit(1);
