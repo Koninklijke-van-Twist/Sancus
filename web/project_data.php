@@ -5166,16 +5166,22 @@ function project_contract_list_salesperson(string $company, array $projectenRows
     }
     arsort($counts);
     $code = (string) array_key_first($counts);
-    $name = '';
-    try {
-        foreach (project_fetch_salespersons($company, $ttl) as $person) {
-            if (strcasecmp((string) $person['code'], $code) === 0) {
-                $name = (string) $person['name'];
-                break;
-            }
+    // Eén keer per verzoek de verkoperslijst ophalen, niet per contract
+    static $people = [];
+    if (!array_key_exists($company, $people)) {
+        try {
+            $people[$company] = project_fetch_salespersons($company, $ttl);
+        } catch (Throwable $e) {
+            error_log('[Sancus] verkopernaam lijst mislukt: ' . substr($e->getMessage(), 0, 300));
+            $people[$company] = [];
         }
-    } catch (Throwable $e) {
-        error_log('[Sancus] verkopernaam lijst mislukt: ' . substr($e->getMessage(), 0, 300));
+    }
+    $name = '';
+    foreach ($people[$company] as $person) {
+        if (strcasecmp((string) $person['code'], $code) === 0) {
+            $name = (string) $person['name'];
+            break;
+        }
     }
 
     return ['code' => $code, 'name' => $name];
@@ -5243,4 +5249,50 @@ function project_fill_contract_list_headers(string $company, array $rows, int $t
     }
 
     return $rows;
+}
+
+/**
+ * Cache van lijsttotalen per contract (web/data/list_summary, afgesloten map).
+ * Tweede keer dezelfde lijst laden = geen BC-calls; ↻ (refresh) slaat de cache over.
+ */
+function project_list_summary_cache_path(string $company, string $contractNo, bool $includeUnbookedCosts): string
+{
+    return __DIR__ . '/data/list_summary/' . sha1($company . "\n" . project_normalize_match_text($contractNo) . "\n" . ($includeUnbookedCosts ? '1' : '0')) . '.json';
+}
+
+/**
+ * @return array<string,mixed>|null
+ */
+function project_list_summary_cache_get(string $company, string $contractNo, bool $includeUnbookedCosts, int $ttl): ?array
+{
+    if (project_is_force_refresh()) {
+        return null;
+    }
+    $path = project_list_summary_cache_path($company, $contractNo, $includeUnbookedCosts);
+    if (!is_file($path) || (time() - (int) @filemtime($path)) > $ttl) {
+        return null;
+    }
+    $row = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($row) || !empty($row['load_error']) || !is_array($row['metrics'] ?? null)) {
+        return null;
+    }
+    project_note_data_cached_at((int) @filemtime($path));
+
+    return $row;
+}
+
+/**
+ * @param array<string,mixed> $row
+ */
+function project_list_summary_cache_put(string $company, array $row, bool $includeUnbookedCosts): void
+{
+    if (!empty($row['load_error']) || !is_array($row['metrics'] ?? null)) {
+        return;
+    }
+    $path = project_list_summary_cache_path($company, (string) ($row['contract_no'] ?? ''), $includeUnbookedCosts);
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    @file_put_contents($path, json_encode($row, JSON_UNESCAPED_UNICODE), LOCK_EX);
 }

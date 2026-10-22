@@ -166,21 +166,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && trim((string) ($_POST['acti
     try {
         auth_set_current_company_context($summaryCompany);
         project_set_force_refresh($summaryRefresh);
-        foreach (array_chunk($summaryNos, SANCUS_LIST_SUMMARY_GROUP) as $summaryChunk) {
-            @set_time_limit(180);
-            $summaryContracts = [];
-            foreach ($summaryChunk as $summaryNo) {
-                $summaryContracts[] = ['contract_no' => $summaryNo, 'customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
-            }
-            $summaryOut = [];
-            foreach (project_contract_summary_rows_batched(
-                $summaryCompany,
-                $summaryContracts,
-                SANCUS_NIGHTLY_CACHE_TTL,
-                !empty($summaryPrefs['include_unbooked_costs'])
-            ) as $summaryRow) {
+        $summaryUnbooked = !empty($summaryPrefs['include_unbooked_costs']);
+        $summaryEmitRows = static function (array $rowsOut) use ($emit, &$summaryDone, $summaryTotal): void {
+            $items = [];
+            foreach ($rowsOut as $summaryRow) {
                 $summaryMetrics = is_array($summaryRow['metrics'] ?? null) ? $summaryRow['metrics'] : null;
-                $summaryOut[] = [
+                $items[] = [
                     'contract_no' => (string) $summaryRow['contract_no'],
                     'cells' => salesperson_metric_cells($summaryRow),
                     'customer' => salesperson_customer_cell($summaryRow),
@@ -189,8 +180,34 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && trim((string) ($_POST['acti
                     'closed' => $summaryMetrics === null ? null : project_row_matches_closed_filter($summaryRow, 'closed'),
                 ];
             }
-            $summaryDone += count($summaryChunk);
-            $emit(['event' => 'rows', 'rows' => $summaryOut, 'done_count' => $summaryDone, 'total' => $summaryTotal]);
+            $summaryDone += count($rowsOut);
+            $emit(['event' => 'rows', 'rows' => $items, 'done_count' => $summaryDone, 'total' => $summaryTotal]);
+        };
+        // Eerst de cache (per contract), daarna alleen de ontbrekende contracten gebundeld
+        $cachedRows = [];
+        $missingNos = [];
+        foreach ($summaryNos as $summaryNo) {
+            $cached = project_list_summary_cache_get($summaryCompany, $summaryNo, $summaryUnbooked, SANCUS_NIGHTLY_CACHE_TTL);
+            if ($cached !== null) {
+                $cachedRows[] = $cached;
+            } else {
+                $missingNos[] = $summaryNo;
+            }
+        }
+        if ($cachedRows !== []) {
+            $summaryEmitRows($cachedRows);
+        }
+        foreach (array_chunk($missingNos, SANCUS_LIST_SUMMARY_GROUP) as $summaryChunk) {
+            @set_time_limit(180);
+            $summaryContracts = [];
+            foreach ($summaryChunk as $summaryNo) {
+                $summaryContracts[] = ['contract_no' => $summaryNo, 'customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
+            }
+            $batchRows = project_contract_summary_rows_batched($summaryCompany, $summaryContracts, SANCUS_NIGHTLY_CACHE_TTL, $summaryUnbooked);
+            foreach ($batchRows as $batchRow) {
+                project_list_summary_cache_put($summaryCompany, $batchRow, $summaryUnbooked);
+            }
+            $summaryEmitRows($batchRows);
         }
         $emit(['ok' => true, 'done' => true, 'done_count' => $summaryDone, 'total' => $summaryTotal]);
     } catch (Throwable $summaryError) {
