@@ -188,9 +188,9 @@ $dataAgeLabel = $dataCachedAt !== null
         tr.sancus-click-row:hover { background: #f8fafc; }
         tr.sancus-click-row a.sancus-row-link { color: var(--kvt-main-blue); font-weight: 700; text-decoration: none; }
         @media (min-width: 640px) {
-            .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
+            .sancus-form-grid { grid-template-columns: minmax(140px, 1fr) 1.3fr 1.2fr 1.2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
-            .sancus-form-dates { grid-template-columns: minmax(160px, 240px); }
+            .sancus-form-dates { grid-template-columns: repeat(3, minmax(160px, 240px)); }
         }
         .sancus-loader {
             position: fixed; inset: 0; z-index: 12000; display: flex; align-items: center; justify-content: center;
@@ -268,33 +268,10 @@ $dataAgeLabel = $dataCachedAt !== null
     <section class="sancus-card">
         <h1 class="brand-display"><?= portal_h(LOC('sancus.hero.title')) ?></h1>
         <p class="sancus-subtitle"><?= portal_h(LOC('sancus.hero.subtitle')) ?></p>
-        <form class="sancus-form contract-nav" method="get" action="index.php" style="margin-top: 16px;">
-            <input type="hidden" name="lang" value="<?= portal_h(getCurrentLanguage()) ?>">
-            <div class="sancus-form-grid">
-                <label>
-                    <?= portal_h(LOC('sancus.label.company')) ?>
-                    <select name="company" id="sancus-search-company">
-                        <?php foreach ($companies as $companyOption): ?>
-                            <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label>
-                    <?= portal_h(LOC('sancus.label.contract')) ?>
-                    <span class="sancus-suggest">
-                        <input id="sancus-search-query" type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
-                        <ul class="sancus-suggest-list" id="sancus-suggest-list" hidden></ul>
-                    </span>
-                </label>
-                <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
-            </div>
-            <div class="sancus-form-dates">
-                <label>
-                    <?= portal_h(LOC('sancus.label.date_from')) ?>
-                    <input type="date" name="date_from" value="<?= portal_h($dateFrom) ?>">
-                </label>
-            </div>
-        </form>
+        <?php portal_render_search_form($companies, $company, [
+            'customer' => $searchFieldValue,
+            'date_from' => $dateFrom,
+        ]); ?>
     </section>
 
     <?php if ($errorKey !== ''): ?>
@@ -325,14 +302,15 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($groups === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.customer.empty')) ?></p>
             <?php else: ?>
+                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-customer-contracts') ?></div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table">
+                    <table class="sancus-table" id="sancus-customer-contracts" data-xlsx-title="<?= portal_h($pageTitle) ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.status')) ?></th>
-                                <th><?= portal_h(LOC('sancus.col.starting_date')) ?></th>
+                                <th data-xlsx-type="date"><?= portal_h(LOC('sancus.col.starting_date')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -356,11 +334,9 @@ $dataAgeLabel = $dataCachedAt !== null
                                         $linkParams = [
                                             'company' => $company,
                                             'contract' => $contractNo,
+                                        'direct' => '1',
                                             'lang' => getCurrentLanguage(),
                                         ];
-                                        if ($dateFrom !== '') {
-                                            $linkParams['date_from'] = $dateFrom;
-                                        }
                                         $href = 'index.php?' . http_build_query($linkParams);
                                         $startingDate = customer_format_date((string) ($contract['starting_date'] ?? ''));
                                     ?>
@@ -664,7 +640,9 @@ $dataAgeLabel = $dataCachedAt !== null
         hide();
     });
 })();
+<?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>

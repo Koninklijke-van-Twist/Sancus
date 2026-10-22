@@ -218,10 +218,10 @@ function test_assert(string $name, bool $condition, string $detail = ''): void
     echo "FAIL {$name}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
 }
 
-foreach (['Completed', 'completed', ' Completed ', 'Voltooid', 'voltooid', ' VOLTOOID '] as $status) {
+foreach (['Completed', 'completed', ' Completed ', 'Voltooid', 'voltooid', ' VOLTOOID ', 'Afgesloten', 'afgesloten', 'Closed', ' CLOSED '] as $status) {
     test_assert('afgesloten: ' . $status, project_job_status_is_closed($status));
 }
-foreach (['Open', 'open', '2', 'Planning', '0', 'Offerte', '1', 'Quote', 'Geannuleerd', 'Afgesloten', '3', ''] as $status) {
+foreach (['Open', 'open', '2', 'Planning', '0', 'Offerte', '1', 'Quote', 'Geannuleerd', '3', ''] as $status) {
     test_assert('open: ' . ($status === '' ? '(leeg)' : $status), project_job_status_is_closed($status) === false);
 }
 
@@ -290,7 +290,7 @@ $mergedProjects = project_merge_projects_for_closed_stats(
     [
         ['no' => 'PRJ1', 'status' => 'Completed'],
         ['no' => 'prj9', 'status' => 'Completed'],
-        ['no' => 'PRJ4', 'status' => 'Afgesloten'],
+        ['no' => 'PRJ4', 'status' => 'Geannuleerd'],
     ]
 );
 $mergedStats = project_closed_project_stats($mergedProjects);
@@ -405,8 +405,6 @@ $calls = [];
 $byName = project_load_run_step('', 'init', [
     'company' => $company,
     'query' => 'Jan Jansen',
-    'date_from' => '2026-03-01',
-    'date_to' => '2026-04-01',
     'ttl' => 60,
 ]);
 test_assert(
@@ -477,13 +475,15 @@ test_assert(
     LOC('sancus.meta.closed_value', 45, 73, 164) === '45% afgesloten (73/164)',
     LOC('sancus.meta.closed_value', 45, 73, 164)
 );
-test_assert('label startdatum', LOC('sancus.label.date_from') === 'Startdatum');
+test_assert('label datum van', LOC('sancus.label.date_from') === 'Datum van');
+test_assert('label datum tot', LOC('sancus.label.date_to') === 'Datum tot');
 
 $index = (string) file_get_contents(dirname(__DIR__) . '/web/index.php');
 $salespersonPage = (string) file_get_contents(dirname(__DIR__) . '/web/salesperson.php');
-test_assert('datum tot weg uit het formulier', str_contains($index, 'name="date_to"') === false);
-test_assert('startdatum-veld blijft', str_contains($index, 'name="date_from"'));
-test_assert('load_step zonder datum tot', str_contains($index, "'date_to' => ''"));
+$formSource = (string) file_get_contents(dirname(__DIR__) . '/web/portal_format.php');
+test_assert('datum tot terug in het formulier', str_contains($formSource, 'name="date_to"'));
+test_assert('datum van in het formulier', str_contains($formSource, 'name="date_from"'));
+test_assert('load_step leest datum tot', str_contains($index, "\$_REQUEST['date_to']"));
 test_assert('salesperson via logincheck', str_contains($salespersonPage, "require_once __DIR__ . '/logincheck.php'"));
 test_assert('analytics.php niet includen', preg_match('/require(?:_once)?\s*\(?\s*[\'\"].*analytics\.php/', $salespersonPage) !== 1);
 test_assert('rij opent het contract', str_contains($salespersonPage, "'contract' => \$contractNo"));

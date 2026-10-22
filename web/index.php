@@ -83,7 +83,7 @@ function portal_amount_cell(float $amount, string $kind, string $extraClass = ''
     if ($subLabel !== '') {
         $classes .= ' has-amount-sub';
     }
-    $html = '<td class="' . portal_h($classes) . '">';
+    $html = '<td class="' . portal_h($classes) . '" data-xv="' . portal_h(sprintf('%.2F', $amount)) . '" data-xt="money">';
     $html .= '<span class="amount-value">' . portal_h(portal_format_amount($amount)) . '</span>';
     if ($subLabel !== '') {
         $html .= '<span class="amount-sub">' . portal_h($subLabel) . '</span>';
@@ -99,7 +99,7 @@ function portal_profit_cell(float $cost, float $revenue, bool $show): string
 
     $profit = $revenue - $cost;
     $classes = 'num profit-cell ' . portal_amount_class($profit, 'profit');
-    $html = '<td class="' . portal_h(trim($classes)) . '">';
+    $html = '<td class="' . portal_h(trim($classes)) . '" data-xv="' . portal_h(sprintf('%.2F', $profit)) . '" data-xt="money">';
     $html .= '<span class="profit-amount">' . portal_h(portal_format_amount($profit)) . '</span>';
 
     if (abs($revenue) >= 0.00001) {
@@ -191,7 +191,11 @@ if (trim((string) ($_REQUEST['action'] ?? '')) === 'load_step') {
             'company' => $stepCompany,
             'query' => trim((string) ($_REQUEST['query'] ?? '')),
             'date_from' => portal_parse_date_param((string) ($_REQUEST['date_from'] ?? '')),
-            'date_to' => '',
+            'date_to' => portal_parse_date_param((string) ($_REQUEST['date_to'] ?? '')),
+            'salesperson' => trim((string) ($_REQUEST['salesperson'] ?? '')),
+            'customer' => trim((string) ($_REQUEST['customer'] ?? '')),
+            'closed' => project_normalize_closed_filter((string) ($_REQUEST['closed'] ?? '')),
+            'direct' => in_array(strtolower(trim((string) ($_REQUEST['direct'] ?? ''))), ['1', 'true', 'yes'], true),
             'ttl' => SANCUS_NIGHTLY_CACHE_TTL,
             'force_refresh' => in_array(strtolower(trim((string) ($_REQUEST['refresh'] ?? ''))), ['1', 'true', 'yes'], true),
             'include_unbooked_costs' => !empty($stepPrefs['include_unbooked_costs']),
@@ -311,6 +315,12 @@ $resultId = trim((string) ($_GET['result'] ?? ''));
 $forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
 $contractNo = '';
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
+$dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
+[$dateFrom, $dateTo] = project_normalize_date_range($dateFrom, $dateTo);
+$salespersonQuery = trim((string) ($_GET['salesperson'] ?? ''));
+$customerQuery = trim((string) ($_GET['customer'] ?? ''));
+$closedFilter = project_normalize_closed_filter((string) ($_GET['closed'] ?? ''));
+$directContract = in_array(strtolower(trim((string) ($_GET['direct'] ?? ''))), ['1', 'true', 'yes'], true);
 
 $view = 'search';
 $errorKey = '';
@@ -422,11 +432,14 @@ try {
                 $view = 'posten';
             }
         }
-    } elseif ($searchQuery !== '') {
+    } elseif ($searchQuery !== '' || $salespersonQuery !== '' || $customerQuery !== '') {
         // Geen synchrone BC-load meer: voortgang via chunked API
         $asyncLoad = true;
         $contractNo = $searchQuery;
         $view = 'loading';
+    } elseif ($dateFrom !== '' || $dateTo !== '' || $closedFilter !== 'all') {
+        // Alleen een datum zou alle contracten laden: vraag om minstens één zoekveld
+        $errorKey = 'sancus.error.need_search_field';
     }
 } catch (Throwable $loadError) {
     $pageLoadMessage = $loadError->getMessage();
@@ -700,9 +713,9 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         table.sancus-table .qty-hours,
         table.sancus-table .qty-hours-zone { cursor: help; }
         @media (min-width: 640px) {
-            .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
+            .sancus-form-grid { grid-template-columns: minmax(140px, 1fr) 1.3fr 1.2fr 1.2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
-            .sancus-form-dates { grid-template-columns: minmax(160px, 240px); }
+            .sancus-form-dates { grid-template-columns: repeat(3, minmax(160px, 240px)); }
         }
         .sancus-suggest { position: relative; display: block; min-width: 0; }
         .sancus-suggest-list {
@@ -902,33 +915,14 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         <h1 class="brand-display"><?= portal_h(LOC('sancus.hero.title')) ?></h1>
         <p class="sancus-subtitle"><?= portal_h(LOC('sancus.hero.subtitle')) ?></p>
 
-        <form class="sancus-form contract-nav" method="get" action="index.php" style="margin-top: 16px;">
-            <input type="hidden" name="lang" value="<?= portal_h(getCurrentLanguage()) ?>">
-            <div class="sancus-form-grid">
-                <label>
-                    <?= portal_h(LOC('sancus.label.company')) ?>
-                    <select name="company" id="sancus-search-company">
-                        <?php foreach ($companies as $companyOption): ?>
-                            <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label>
-                    <?= portal_h(LOC('sancus.label.contract')) ?>
-                    <span class="sancus-suggest">
-                        <input id="sancus-search-query" type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
-                        <ul class="sancus-suggest-list" id="sancus-suggest-list" hidden></ul>
-                    </span>
-                </label>
-                <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
-            </div>
-            <div class="sancus-form-dates">
-                <label>
-                    <?= portal_h(LOC('sancus.label.date_from')) ?>
-                    <input type="date" name="date_from" value="<?= portal_h($dateFrom) ?>">
-                </label>
-            </div>
-        </form>
+        <?php portal_render_search_form($companies, $company, [
+            'contract' => $searchFieldValue,
+            'salesperson' => $salespersonQuery,
+            'customer' => $customerQuery,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'closed' => $closedFilter,
+        ]); ?>
     </section>
 
     <?php if ($errorKey !== ''): ?>
@@ -940,6 +934,11 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             data-company="<?= portal_h($company) ?>"
             data-query="<?= portal_h($searchQuery) ?>"
             data-date-from="<?= portal_h($dateFrom) ?>"
+            data-date-to="<?= portal_h($dateTo) ?>"
+            data-salesperson="<?= portal_h($salespersonQuery) ?>"
+            data-customer="<?= portal_h($customerQuery) ?>"
+            data-closed="<?= portal_h($closedFilter) ?>"
+            data-direct="<?= $directContract ? '1' : '0' ?>"
             data-focus="<?= portal_h($focusProject) ?>"
             data-refresh="<?= $forceRefresh ? '1' : '0' ?>"
             data-lang="<?= portal_h(getCurrentLanguage()) ?>">
@@ -1060,11 +1059,12 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.empty.posten')) ?></p>
             <?php else: ?>
                 <div class="sancus-table-toolbar">
+                    <?= portal_xlsx_button('sancus-posten-table') ?>
                     <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-collapse-all"><?= portal_h(LOC('sancus.btn.collapse_all')) ?></button>
                     <button type="button" class="sancus-btn sancus-btn-secondary" id="sancus-expand-all"><?= portal_h(LOC('sancus.btn.expand_all')) ?></button>
                 </div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table" id="sancus-posten-table">
+                    <table class="sancus-table" id="sancus-posten-table" data-xlsx-title="<?= portal_h($contractNo !== '' ? $contractNo : 'Projectposten') ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.col.details')) ?></th>
@@ -1073,10 +1073,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                 <th><?= portal_h(LOC('sancus.col.workorder')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.type')) ?></th>
                                 <th><?= portal_h(LOC('sancus.col.description')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.cost')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.profit')) ?></th>
+                                <th class="num" data-xlsx-type="number"><?= portal_h(LOC('sancus.col.quantity')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.cost')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.revenue')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.col.profit')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1138,14 +1138,14 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                     }
                                 ?>>
                                     <?php if ($isLine): ?>
-                                        <td class="line-date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
+                                        <td class="line-date" data-xt="date"><?= $postingDate !== '' ? portal_h($postingDate) : '' ?></td>
                                     <?php elseif ($showDualWorkOrderDates): ?>
                                         <td class="workorder-dates<?= portal_h($detailsToggleClass) ?>">
                                             <span class="workorder-start-date"><?= portal_h($workOrderStartDate) ?></span>
                                             <span class="line-date"><?= portal_h($postingDate) ?></span>
                                         </td>
                                     <?php elseif ($showWorkOrderStart): ?>
-                                        <td class="workorder-start-date<?= portal_h($detailsToggleClass) ?>"><?= portal_h($workOrderStartDate) ?></td>
+                                        <td class="workorder-start-date<?= portal_h($detailsToggleClass) ?>" data-xt="date"><?= portal_h($workOrderStartDate) ?></td>
                                     <?php else: ?>
                                         <?= portal_group_cell(
                                             (string) ($row['details'] ?? ''),
@@ -1179,7 +1179,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                                         ) ?>
                                     <?php endif; ?>
                                     <td<?= $hoursZoneClass !== '' ? ' class="' . portal_h(trim($hoursZoneClass)) . '"' : '' ?>><?= ($isLine || $description !== '') ? portal_h(portal_display_value($description)) : '' ?></td>
-                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"><?php
+                                    <?php
+                                        $showQty = $qty !== null && !$isUnbooked && ($isLine || !empty($row['show_type']));
+                                    ?>
+                                    <td class="num<?= $isGroup ? ' num-qty' : '' ?><?= portal_h($hoursZoneClass) ?>"<?= $showQty ? ' data-xv="' . portal_h((string) (float) $qty) . '" data-xt="number"' : '' ?>><?php
                                         if ($isLine && !$isUnbooked && $qty !== null) {
                                             echo portal_quantity_html((float) $qty, $typeLabel);
                                         } elseif (!$isLine && $qty !== null && !empty($row['show_type']) && !$isUnbooked) {
@@ -1612,6 +1615,13 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         body.set('company', panel.getAttribute('data-company') || '');
         body.set('query', panel.getAttribute('data-query') || '');
         body.set('date_from', panel.getAttribute('data-date-from') || '');
+        body.set('date_to', panel.getAttribute('data-date-to') || '');
+        body.set('salesperson', panel.getAttribute('data-salesperson') || '');
+        body.set('customer', panel.getAttribute('data-customer') || '');
+        body.set('closed', panel.getAttribute('data-closed') || 'all');
+        if ((panel.getAttribute('data-direct') || '') === '1') {
+            body.set('direct', '1');
+        }
         if (loadId) {
             body.set('load_id', loadId);
         }
@@ -1642,6 +1652,48 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 return params;
             }
 
+            // Zoekvelden behouden; alleen het gekozen veld krijgt de code
+            function searchParams(field, value) {
+                var params = pageParams();
+                var dt = panel.getAttribute('data-date-to') || '';
+                if (dt) {
+                    params.set('date_to', dt);
+                }
+                ['contract', 'salesperson', 'customer'].forEach(function (name) {
+                    var current = name === 'contract' ? (panel.getAttribute('data-query') || '') : (panel.getAttribute('data-' + name) || '');
+                    if (current) {
+                        params.set(name, current);
+                    }
+                });
+                var cf = panel.getAttribute('data-closed') || 'all';
+                if (cf !== 'all') {
+                    params.set('closed', cf);
+                }
+                params.set(field, value);
+                return params;
+            }
+            var combinedSearch = (panel.getAttribute('data-salesperson') || '') !== ''
+                || (panel.getAttribute('data-customer') || '') !== ''
+                || (panel.getAttribute('data-date-from') || '') !== ''
+                || (panel.getAttribute('data-date-to') || '') !== ''
+                || (panel.getAttribute('data-closed') || 'all') !== 'all';
+
+            if (data.redirect_combined) {
+                var combinedParams = new URLSearchParams();
+                combinedParams.set('company', panel.getAttribute('data-company') || '');
+                combinedParams.set('lang', panel.getAttribute('data-lang') || 'nl');
+                ['contract', 'salesperson', 'customer', 'date_from', 'date_to', 'closed'].forEach(function (name) {
+                    if (data.redirect_combined[name]) {
+                        combinedParams.set(name, data.redirect_combined[name]);
+                    }
+                });
+                if ((panel.getAttribute('data-refresh') || '') === '1') {
+                    combinedParams.set('refresh', '1');
+                }
+                window.location.href = 'salesperson.php?' + combinedParams.toString();
+                return;
+            }
+
             if (data.redirect_salesperson && data.redirect_salesperson.code) {
                 var salespersonParams = pageParams();
                 salespersonParams.set('salesperson', data.redirect_salesperson.code);
@@ -1657,9 +1709,13 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                     item.className = 'sancus-list-item';
                     var link = document.createElement('a');
                     link.className = 'contract-nav';
-                    var choiceParams = pageParams();
-                    choiceParams.set('salesperson', match.code || '');
-                    link.href = 'salesperson.php?' + choiceParams.toString();
+                    if (combinedSearch) {
+                        link.href = 'index.php?' + searchParams('salesperson', match.code || '').toString();
+                    } else {
+                        var choiceParams = pageParams();
+                        choiceParams.set('salesperson', match.code || '');
+                        link.href = 'salesperson.php?' + choiceParams.toString();
+                    }
                     var label = match.name || match.code || '';
                     if (match.name && match.code) {
                         label += ' (' + match.code + ')';
@@ -1691,9 +1747,13 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                     item.className = 'sancus-list-item';
                     var link = document.createElement('a');
                     link.className = 'contract-nav';
-                    var choiceParams = pageParams();
-                    choiceParams.set('customer', match.no || '');
-                    link.href = 'customer.php?' + choiceParams.toString();
+                    if (combinedSearch) {
+                        link.href = 'index.php?' + searchParams('customer', match.no || '').toString();
+                    } else {
+                        var choiceParams = pageParams();
+                        choiceParams.set('customer', match.no || '');
+                        link.href = 'customer.php?' + choiceParams.toString();
+                    }
                     var label = match.name || match.no || '';
                     if (match.name && match.no) {
                         label += ' (' + match.no + ')';
@@ -1713,6 +1773,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             if (data.redirect && data.redirect.contract) {
                 var redirectParams = pageParams();
                 redirectParams.set('contract', data.redirect.contract);
+                redirectParams.set('direct', '1');
                 if (data.redirect.focus) {
                     redirectParams.set('focus', data.redirect.focus);
                 }
@@ -1816,191 +1877,9 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         window.clearTimeout(watchdog);
     });
 })();
-(function () {
-    var input = document.getElementById('sancus-search-query');
-    var list = document.getElementById('sancus-suggest-list');
-    var company = document.getElementById('sancus-search-company');
-    if (!input || !list) {
-        return;
-    }
-
-    var timer = null;
-    var controller = null;
-    var active = -1;
-    var salespersonKind = <?= json_encode(LOC('sancus.salesperson.title'), JSON_UNESCAPED_UNICODE) ?>;
-    var customerKind = <?= json_encode(LOC('sancus.meta.customer'), JSON_UNESCAPED_UNICODE) ?>;
-
-    function hide() {
-        list.hidden = true;
-        list.innerHTML = '';
-        active = -1;
-    }
-
-    function buttons() {
-        return list.querySelectorAll('button');
-    }
-
-    function setActive(index) {
-        var items = buttons();
-        active = index;
-        for (var i = 0; i < items.length; i++) {
-            items[i].classList.toggle('is-active', i === active);
-        }
-        if (items[active]) {
-            items[active].scrollIntoView({ block: 'nearest' });
-        }
-    }
-
-    function choose(code) {
-        if (!code) {
-            return;
-        }
-        input.value = code;
-        hide();
-        if (input.form) {
-            input.form.requestSubmit();
-        }
-    }
-
-    function chooseCustomer(no) {
-        if (!no) {
-            return;
-        }
-        hide();
-        var params = new URLSearchParams();
-        params.set('company', company ? company.value : '');
-        params.set('customer', no);
-        var langInput = input.form ? input.form.querySelector('input[name="lang"]') : null;
-        params.set('lang', langInput && langInput.value ? langInput.value : 'nl');
-        var dateFrom = input.form ? input.form.querySelector('input[name="date_from"]') : null;
-        if (dateFrom && dateFrom.value) {
-            params.set('date_from', dateFrom.value);
-        }
-        var loader = document.getElementById('sancus-loader');
-        if (loader) {
-            loader.classList.add('is-visible');
-            loader.setAttribute('aria-hidden', 'false');
-            loader.setAttribute('aria-busy', 'true');
-        }
-        window.location.href = 'customer.php?' + params.toString();
-    }
-
-    function addSuggestButton(label, codeLine, onClick) {
-        var item = document.createElement('li');
-        var button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = label;
-        if (codeLine) {
-            var code = document.createElement('span');
-            code.className = 'sancus-suggest-code';
-            code.textContent = codeLine;
-            button.appendChild(code);
-        }
-        button.addEventListener('mousedown', function (event) {
-            event.preventDefault();
-        });
-        button.addEventListener('click', onClick);
-        item.appendChild(button);
-        list.appendChild(item);
-    }
-
-    function render(data) {
-        list.innerHTML = '';
-        var matches = (data && data.matches) || [];
-        var customers = (data && data.customers) || [];
-        if (!matches.length && !customers.length) {
-            hide();
-            return;
-        }
-        matches.forEach(function (match) {
-            var line = salespersonKind;
-            if (match.code) {
-                line += ' · ' + match.code;
-            }
-            addSuggestButton(match.name || match.code || '', line, function () {
-                choose(match.code || '');
-            });
-        });
-        customers.forEach(function (customer) {
-            var line = customerKind;
-            if (customer.no) {
-                line += ' · ' + customer.no;
-            }
-            addSuggestButton(customer.name || customer.no || '', line, function () {
-                chooseCustomer(customer.no || '');
-            });
-        });
-        list.hidden = false;
-        active = -1;
-    }
-
-    function fetchMatches() {
-        var query = input.value.trim();
-        if (query.length < 2 || /^(CT|PRJ)\d/i.test(query)) {
-            hide();
-            return;
-        }
-        if (controller) {
-            controller.abort();
-        }
-        controller = new AbortController();
-        var body = new URLSearchParams();
-        body.set('action', 'salesperson_suggest');
-        body.set('company', company ? company.value : '');
-        body.set('q', query);
-        fetch('index.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
-            body: body.toString(),
-            credentials: 'same-origin',
-            cache: 'no-store',
-            signal: controller.signal
-        }).then(function (response) {
-            return response.json();
-        }).then(function (data) {
-            if (input.value.trim() !== query) {
-                return;
-            }
-            render(data || {});
-        }).catch(function () {});
-    }
-
-    input.addEventListener('input', function () {
-        if (timer) {
-            window.clearTimeout(timer);
-        }
-        timer = window.setTimeout(fetchMatches, 250);
-    });
-    input.addEventListener('keydown', function (event) {
-        var items = buttons();
-        if (list.hidden || !items.length) {
-            return;
-        }
-        if (event.key === 'ArrowDown') {
-            event.preventDefault();
-            setActive(Math.min(items.length - 1, active + 1));
-        } else if (event.key === 'ArrowUp') {
-            event.preventDefault();
-            setActive(Math.max(0, active - 1));
-        } else if (event.key === 'Enter' && active >= 0 && items[active]) {
-            event.preventDefault();
-            items[active].click();
-        } else if (event.key === 'Escape') {
-            hide();
-        }
-    });
-    document.addEventListener('click', function (event) {
-        var target = event.target;
-        if (!(target instanceof Node)) {
-            return;
-        }
-        if (target === input || list.contains(target)) {
-            return;
-        }
-        hide();
-    });
-})();
+<?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>

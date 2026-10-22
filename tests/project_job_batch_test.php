@@ -601,8 +601,8 @@ try {
     $initResult = project_load_run_step('', 'init', [
         'company' => $company,
         'query' => 'CT26000243',
-        'date_from' => $dateFrom,
-        'date_to' => $dateTo,
+        // Eén contract: datum werkt op de startdatum (lijst), niet op de posten
+        'direct' => true,
         'ttl' => 60,
     ]);
     test_assert(

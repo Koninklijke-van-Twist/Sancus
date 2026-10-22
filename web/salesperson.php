@@ -25,7 +25,7 @@ function salesperson_money_cell(float $amount, string $kind, string $sub = ''): 
     if ($sub !== '') {
         $classes .= ' has-amount-sub';
     }
-    $html = '<td class="' . portal_h($classes) . '">';
+    $html = '<td class="' . portal_h($classes) . '" data-xv="' . portal_h(sprintf('%.2F', $amount)) . '" data-xt="money">';
     $html .= '<span class="amount-value">' . portal_h(portal_format_amount($amount)) . '</span>';
     if ($sub !== '') {
         $html .= '<span class="amount-sub">' . portal_h($sub) . '</span>';
@@ -76,25 +76,36 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
 }
 
 $salespersonCode = trim((string) ($_GET['salesperson'] ?? ''));
+$customerParam = trim((string) ($_GET['customer'] ?? ''));
+$contractQuery = trim((string) ($_GET['contract'] ?? ''));
 $dateFrom = portal_parse_date_param((string) ($_GET['date_from'] ?? ''));
+$dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
+[$dateFrom, $dateTo] = project_normalize_date_range($dateFrom, $dateTo);
+$closedFilter = project_normalize_closed_filter((string) ($_GET['closed'] ?? ''));
 $forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
 $errorKey = '';
 $result = null;
 $dataCachedAt = null;
 
-if ($salespersonCode !== '') {
+if ($salespersonCode !== '' || $customerParam !== '' || $contractQuery !== '') {
     @set_time_limit(300);
     try {
         auth_set_current_company_context($company);
         project_reset_data_cached_at();
         project_set_force_refresh($forceRefresh);
         try {
-            $result = project_salesperson_contract_rows(
+            // Gecombineerd: contract/project AND verkoper AND klant, startdatum van/tot, afgesloten-filter
+            $result = project_combined_contract_rows(
                 $company,
+                $contractQuery,
                 $salespersonCode,
+                $customerParam,
                 $dateFrom,
+                $dateTo,
                 SANCUS_NIGHTLY_CACHE_TTL,
-                $includeUnbookedCosts
+                $includeUnbookedCosts,
+                true,
+                $closedFilter
             );
         } finally {
             project_set_force_refresh(false);
@@ -122,17 +133,30 @@ if ($resolvedCode === '') {
 }
 $rows = is_array($result['rows'] ?? null) ? $result['rows'] : [];
 $searchFieldValue = $salespersonName !== '' ? $salespersonName : $salespersonCode;
-$pageTitle = $salespersonName !== '' ? $salespersonName : ($resolvedCode !== '' ? $resolvedCode : LOC('sancus.salesperson.title'));
+$customerLabel = is_array($result['customer'] ?? null) ? trim((string) ($result['customer']['name'] ?? '')) : '';
+$titleParts = [];
+if ($searchFieldValue !== '') {
+    $titleParts[] = $searchFieldValue;
+}
+if ($customerParam !== '') {
+    $titleParts[] = $customerLabel !== '' ? $customerLabel : $customerParam;
+}
+if ($contractQuery !== '') {
+    $titleParts[] = $contractQuery;
+}
+$pageTitle = $titleParts !== [] ? implode(' · ', $titleParts) : LOC('sancus.salesperson.title');
 
 $refreshParams = [
     'company' => $company,
-    'salesperson' => $resolvedCode,
+    'salesperson' => $resolvedCode !== '' ? $resolvedCode : null,
+    'customer' => $customerParam !== '' ? $customerParam : null,
+    'contract' => $contractQuery !== '' ? $contractQuery : null,
+    'date_from' => $dateFrom !== '' ? $dateFrom : null,
+    'date_to' => $dateTo !== '' ? $dateTo : null,
+    'closed' => $closedFilter !== 'all' ? $closedFilter : null,
     'refresh' => '1',
     'lang' => getCurrentLanguage(),
 ];
-if ($dateFrom !== '') {
-    $refreshParams['date_from'] = $dateFrom;
-}
 $refreshUrl = 'salesperson.php?' . http_build_query($refreshParams);
 $dataAgeLabel = $dataCachedAt !== null
     ? LOC('sancus.data_age', project_format_data_age((int) $dataCachedAt))
@@ -189,9 +213,9 @@ $dataAgeLabel = $dataCachedAt !== null
         tr.sancus-click-row:hover { background: #f8fafc; }
         tr.sancus-click-row a.sancus-row-link { color: var(--kvt-main-blue); font-weight: 700; text-decoration: none; }
         @media (min-width: 640px) {
-            .sancus-form-grid { grid-template-columns: 1fr 2fr auto; align-items: end; }
+            .sancus-form-grid { grid-template-columns: minmax(140px, 1fr) 1.3fr 1.2fr 1.2fr auto; align-items: end; }
             .sancus-form-grid .sancus-btn { width: auto; min-width: 120px; }
-            .sancus-form-dates { grid-template-columns: minmax(160px, 240px); }
+            .sancus-form-dates { grid-template-columns: repeat(3, minmax(160px, 240px)); }
         }
         .sancus-loader {
             position: fixed; inset: 0; z-index: 12000; display: flex; align-items: center; justify-content: center;
@@ -269,33 +293,14 @@ $dataAgeLabel = $dataCachedAt !== null
     <section class="sancus-card">
         <h1 class="brand-display"><?= portal_h(LOC('sancus.hero.title')) ?></h1>
         <p class="sancus-subtitle"><?= portal_h(LOC('sancus.hero.subtitle')) ?></p>
-        <form class="sancus-form contract-nav" method="get" action="index.php" style="margin-top: 16px;">
-            <input type="hidden" name="lang" value="<?= portal_h(getCurrentLanguage()) ?>">
-            <div class="sancus-form-grid">
-                <label>
-                    <?= portal_h(LOC('sancus.label.company')) ?>
-                    <select name="company" id="sancus-search-company">
-                        <?php foreach ($companies as $companyOption): ?>
-                            <option value="<?= portal_h($companyOption) ?>"<?= $companyOption === $company ? ' selected' : '' ?>><?= portal_h($companyOption) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label>
-                    <?= portal_h(LOC('sancus.label.contract')) ?>
-                    <span class="sancus-suggest">
-                        <input id="sancus-search-query" type="search" name="contract" value="<?= portal_h($searchFieldValue) ?>" placeholder="<?= portal_h(LOC('sancus.placeholder.contract')) ?>" autocomplete="off" required>
-                        <ul class="sancus-suggest-list" id="sancus-suggest-list" hidden></ul>
-                    </span>
-                </label>
-                <button class="sancus-btn" type="submit"><?= portal_h(LOC('sancus.btn.search')) ?></button>
-            </div>
-            <div class="sancus-form-dates">
-                <label>
-                    <?= portal_h(LOC('sancus.label.date_from')) ?>
-                    <input type="date" name="date_from" value="<?= portal_h($dateFrom) ?>">
-                </label>
-            </div>
-        </form>
+        <?php portal_render_search_form($companies, $company, [
+            'contract' => $contractQuery,
+            'salesperson' => $searchFieldValue,
+            'customer' => $customerParam,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'closed' => $closedFilter,
+        ]); ?>
     </section>
 
     <?php if ($errorKey !== ''): ?>
@@ -323,21 +328,22 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($rows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.salesperson.empty')) ?></p>
             <?php else: ?>
+                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-contract-list') ?></div>
                 <div class="sancus-table-wrap">
-                    <table class="sancus-table">
+                    <table class="sancus-table" id="sancus-contract-list" data-xlsx-title="<?= portal_h($pageTitle) ?>">
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.meta.customer')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.profit')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.material')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.hours')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.meta.kilometers')) ?></th>
-                                <th class="num"><?= portal_h(LOC('sancus.col.closed_pct')) ?></th>
+                                <th class="num" data-xlsx-type="int"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.profit')) ?></th>
+                                <th class="num" data-xlsx-type="percent"><?= portal_h(LOC('sancus.meta.profit_pct')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.material')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.hours')) ?></th>
+                                <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.kilometers')) ?></th>
+                                <th class="num" data-xlsx-type="percent"><?= portal_h(LOC('sancus.col.closed_pct')) ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -350,11 +356,9 @@ $dataAgeLabel = $dataCachedAt !== null
                                     $linkParams = [
                                         'company' => $company,
                                         'contract' => $contractNo,
+                                        'direct' => '1',
                                         'lang' => getCurrentLanguage(),
                                     ];
-                                    if ($dateFrom !== '') {
-                                        $linkParams['date_from'] = $dateFrom;
-                                    }
                                     $href = 'index.php?' . http_build_query($linkParams);
                                 ?>
                                 <tr class="sancus-click-row">
@@ -379,15 +383,15 @@ $dataAgeLabel = $dataCachedAt !== null
                                                 ? LOC('sancus.meta.contract') . ': ' . portal_format_amount((float) $contractValue)
                                                 : '';
                                         ?>
-                                        <td class="num"><?= portal_h((string) ($metrics['project_count'] ?? 0)) ?></td>
+                                        <td class="num" data-xv="<?= (int) ($metrics['project_count'] ?? 0) ?>" data-xt="int"><?= portal_h((string) ($metrics['project_count'] ?? 0)) ?></td>
                                         <?= salesperson_money_cell((float) $metrics['cost'], 'cost') ?>
                                         <?= salesperson_money_cell((float) $metrics['revenue'], 'revenue', $revenueSub) ?>
                                         <?= salesperson_money_cell((float) $metrics['profit'], 'profit') ?>
-                                        <td class="num <?= portal_h($profitPct === null ? 'amount-zero' : portal_amount_class((float) $profitPct, 'profit')) ?>"><?= portal_h(portal_format_percent($profitPct)) ?></td>
+                                        <td class="num <?= portal_h($profitPct === null ? 'amount-zero' : portal_amount_class((float) $profitPct, 'profit')) ?>"<?= $profitPct !== null ? ' data-xv="' . portal_h(sprintf('%.6F', (float) $profitPct / 100)) . '" data-xt="percent"' : '' ?>><?= portal_h(portal_format_percent($profitPct)) ?></td>
                                         <?= salesperson_money_cell((float) $metrics['material_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['material_qty'], 'Materiaal')) ?>
                                         <?= salesperson_money_cell((float) $metrics['hours_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['hours_qty'], 'Uren')) ?>
                                         <?= salesperson_money_cell((float) $metrics['kilometers_money'], 'profit', portal_format_quantity_with_unit((float) $metrics['kilometers_qty'], 'Kilometers')) ?>
-                                        <td class="num"><?= portal_h(LOC('sancus.meta.closed_value', (int) $metrics['closed_percent'], (int) $metrics['closed'], (int) $metrics['closed_total'])) ?></td>
+                                        <td class="num" data-xv="<?= portal_h(sprintf('%.6F', (int) $metrics['closed_total'] > 0 ? (int) $metrics['closed'] / (int) $metrics['closed_total'] : 0)) ?>" data-xt="percent"><?= portal_h(LOC('sancus.meta.closed_value', (int) $metrics['closed_percent'], (int) $metrics['closed'], (int) $metrics['closed_total'])) ?></td>
                                     <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
@@ -683,7 +687,9 @@ $dataAgeLabel = $dataCachedAt !== null
         hide();
     });
 })();
+<?php portal_render_search_suggest_script(); ?>
 </script>
+<?php portal_render_xlsx_script(); ?>
 <?php renderLanguageSwitcherScript(); ?>
 </body>
 </html>
