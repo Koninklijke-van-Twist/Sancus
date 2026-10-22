@@ -153,5 +153,8 @@ test_assert('lijstpagina vraagt koppen zonder totalen op', str_contains($sp, "//
 test_assert('lijst pas zichtbaar na alle totalen, waakhond bij stilstand', str_contains($sp, 'id="sancus-contract-list-wrap" hidden') && str_contains($sp, 'STALL_MS') && str_contains($sp, 'controller.abort()'));
 test_assert('doorverwijzing naar de lijst heeft een waakhond met window.stop', str_contains($ix, "navigateWithWatchdog('salesperson.php?' + combinedParams.toString())") && str_contains($ix, 'window.stop()'));
 
+test_assert('export: klantnaam via data-xv, Klantnummer- en Verkoper-kolom, spinner echt verborgen', str_contains($sp, 'sancus-customerno-cell') && str_contains($sp, "LOC('sancus.col.customer_no')") && str_contains($sp, "setAttribute('data-xv', item.customer_name") && str_contains($sp, '.sancus-list-progress[hidden] { display: none') && str_contains($sp, "progress.style.display = 'none'"));
+
 echo $failures === 0 ? "\nAlle tests geslaagd.\n" : "\n{$failures} test(s) mislukt.\n";
 exit($failures === 0 ? 0 : 1);
+

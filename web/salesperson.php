@@ -175,6 +175,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && trim((string) ($_POST['acti
                     'contract_no' => (string) $summaryRow['contract_no'],
                     'cells' => salesperson_metric_cells($summaryRow),
                     'customer' => salesperson_customer_cell($summaryRow),
+                    'customer_name' => trim((string) ($summaryRow['customer_name'] ?? '')),
+                    'customer_no' => trim((string) ($summaryRow['customer_no'] ?? '')),
                     'has_customer' => trim((string) ($summaryRow['customer_name'] ?? '')) !== '' || trim((string) ($summaryRow['customer_no'] ?? '')) !== '',
                     'salesperson' => salesperson_person_label(is_array($summaryRow['salesperson'] ?? null) ? $summaryRow['salesperson'] : []),
                     'closed' => $summaryMetrics === null ? null : project_row_matches_closed_filter($summaryRow, 'closed'),
@@ -382,6 +384,7 @@ $dataAgeLabel = $dataCachedAt !== null
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table .group-cell-name { display: block; margin-top: 2px; font-size: 0.82em; font-weight: 400; color: var(--kvt-muted); }
+        .sancus-list-progress[hidden] { display: none !important; }
         .sancus-list-progress { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
         tr.sancus-click-row { cursor: pointer; }
         tr.sancus-click-row:hover { background: #f8fafc; }
@@ -518,9 +521,8 @@ $dataAgeLabel = $dataCachedAt !== null
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.meta.customer')) ?></th>
-                                <?php if ($showSalespersonColumn): ?>
-                                    <th><?= portal_h(LOC('sancus.label.salesperson')) ?></th>
-                                <?php endif; ?>
+                                <th hidden><?= portal_h(LOC('sancus.col.customer_no')) ?></th>
+                                <th<?= $showSalespersonColumn ? '' : ' hidden' ?>><?= portal_h(LOC('sancus.label.salesperson')) ?></th>
                                 <th class="num" data-xlsx-type="int"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
                                 <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
                                 <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
@@ -550,10 +552,10 @@ $dataAgeLabel = $dataCachedAt !== null
                                 <?php $rowLoaded = is_array($row['metrics'] ?? null); ?>
                                 <tr class="sancus-click-row"<?= $rowLoaded ? '' : ' data-summary-contract="' . portal_h($contractNo) . '"' ?>>
                                     <td><a class="contract-nav sancus-row-link" href="<?= portal_h($href) ?>"><?= portal_h(portal_display_value($contractNo)) ?></a></td>
-                                    <td class="sancus-customer-cell"><?= salesperson_customer_cell($row) ?></td>
-                                    <?php if ($showSalespersonColumn): ?>
-                                        <td class="sancus-salesperson-cell"><?= portal_h($rowLoaded ? salesperson_person_label(is_array($row['salesperson'] ?? null) ? $row['salesperson'] : []) : '…') ?></td>
-                                    <?php endif; ?>
+                                    <?php $rowCustomerName = trim((string) ($row['customer_name'] ?? '')); $rowCustomerNo = trim((string) ($row['customer_no'] ?? '')); ?>
+                                    <td class="sancus-customer-cell" data-xt="text" data-xv="<?= portal_h($rowCustomerName !== '' ? $rowCustomerName : $rowCustomerNo) ?>"><?= salesperson_customer_cell($row) ?></td>
+                                    <td class="sancus-customerno-cell" hidden data-xt="text" data-xv="<?= portal_h($rowCustomerNo) ?>"><?= portal_h($rowCustomerNo) ?></td>
+                                    <td class="sancus-salesperson-cell"<?= $showSalespersonColumn ? '' : ' hidden' ?>><?= portal_h($rowLoaded ? salesperson_person_label(is_array($row['salesperson'] ?? null) ? $row['salesperson'] : []) : '…') ?></td>
                                     <?php if ($rowLoaded): ?>
                                         <?= salesperson_metric_cells($row) ?>
                                     <?php else: ?>
@@ -624,6 +626,12 @@ $dataAgeLabel = $dataCachedAt !== null
             var customerCell = tr.querySelector('.sancus-customer-cell');
             if (customerCell) {
                 customerCell.innerHTML = item.customer;
+                customerCell.setAttribute('data-xv', item.customer_name || item.customer_no || '');
+            }
+            var customerNoCell = tr.querySelector('.sancus-customerno-cell');
+            if (customerNoCell) {
+                customerNoCell.textContent = item.customer_no || '';
+                customerNoCell.setAttribute('data-xv', item.customer_no || '');
             }
         }
         var personCell = tr.querySelector('.sancus-salesperson-cell');
@@ -662,6 +670,7 @@ $dataAgeLabel = $dataCachedAt !== null
             return;
         }
         progress.hidden = true;
+        progress.style.display = 'none';
         wrap.hidden = false;
         if (closedFilter !== 'all') {
             var note = document.createElement('p');
