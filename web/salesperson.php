@@ -69,6 +69,19 @@ function salesperson_metric_cells(array $row): string
 }
 
 /**
+ * Verkopernaam voor de lijstkolom ('—' als onbekend).
+ *
+ * @param array<string,mixed> $person
+ */
+function salesperson_person_label(array $person): string
+{
+    $name = trim((string) ($person['name'] ?? ''));
+    $code = trim((string) ($person['code'] ?? ''));
+
+    return $name !== '' ? $name : ($code !== '' ? $code : '—');
+}
+
+/**
  * Klantcel van een lijstrij.
  *
  * @param array<string,mixed> $row
@@ -155,6 +168,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && trim((string) ($_GET['action
                 'cells' => salesperson_metric_cells($summaryRow),
                 'customer' => salesperson_customer_cell($summaryRow),
                 'has_customer' => trim((string) ($summaryRow['customer_name'] ?? '')) !== '' || trim((string) ($summaryRow['customer_no'] ?? '')) !== '',
+                'salesperson' => salesperson_person_label(is_array($summaryRow['salesperson'] ?? null) ? $summaryRow['salesperson'] : []),
                 'closed' => $summaryMetrics === null ? null : project_row_matches_closed_filter($summaryRow, 'closed'),
             ];
         }
@@ -261,6 +275,8 @@ if ($customerParam !== '') {
 if ($contractQuery !== '') {
     $titleParts[] = $contractQuery;
 }
+// Zoeken op klant: extra kolom Verkoper. De kolom Klant staat er altijd (dus ook bij zoeken op verkoper).
+$showSalespersonColumn = $customerParam !== '';
 $pageTitle = $titleParts !== [] ? implode(' · ', $titleParts) : LOC('sancus.salesperson.title');
 
 $refreshParams = [
@@ -457,6 +473,9 @@ $dataAgeLabel = $dataCachedAt !== null
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
                                 <th><?= portal_h(LOC('sancus.meta.customer')) ?></th>
+                                <?php if ($showSalespersonColumn): ?>
+                                    <th><?= portal_h(LOC('sancus.label.salesperson')) ?></th>
+                                <?php endif; ?>
                                 <th class="num" data-xlsx-type="int"><?= portal_h(LOC('sancus.col.projects_count')) ?></th>
                                 <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.cost')) ?></th>
                                 <th class="num" data-xlsx-type="money"><?= portal_h(LOC('sancus.meta.revenue')) ?></th>
@@ -487,6 +506,9 @@ $dataAgeLabel = $dataCachedAt !== null
                                 <tr class="sancus-click-row"<?= $rowLoaded ? '' : ' data-summary-contract="' . portal_h($contractNo) . '"' ?>>
                                     <td><a class="contract-nav sancus-row-link" href="<?= portal_h($href) ?>"><?= portal_h(portal_display_value($contractNo)) ?></a></td>
                                     <td class="sancus-customer-cell"><?= salesperson_customer_cell($row) ?></td>
+                                    <?php if ($showSalespersonColumn): ?>
+                                        <td class="sancus-salesperson-cell"><?= portal_h($rowLoaded ? salesperson_person_label(is_array($row['salesperson'] ?? null) ? $row['salesperson'] : []) : '…') ?></td>
+                                    <?php endif; ?>
                                     <?php if ($rowLoaded): ?>
                                         <?= salesperson_metric_cells($row) ?>
                                     <?php else: ?>
@@ -579,6 +601,10 @@ $dataAgeLabel = $dataCachedAt !== null
             if (customerCell) {
                 customerCell.innerHTML = item.customer;
             }
+        }
+        var personCell = tr.querySelector('.sancus-salesperson-cell');
+        if (personCell) {
+            personCell.textContent = item && item.salesperson ? item.salesperson : '—';
         }
         tr.removeAttribute('data-summary-contract');
         var match = true;

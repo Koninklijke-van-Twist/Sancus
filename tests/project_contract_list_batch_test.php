@@ -130,6 +130,7 @@ foreach ($single as $i => $row) {
 test_assert('zelfde totalen, % afgesloten en contractwaarde als per contract', $same, $detail);
 test_assert('werkorder-project telt mee in % afgesloten', ($batched[0]['metrics']['closed_total'] ?? 0) === 3, json_encode($batched[0]['metrics'] ?? null));
 
+test_assert('elke rij heeft een verkoperveld voor de lijstkolom', isset($batched[0]['salesperson']) && array_key_exists('name', $batched[0]['salesperson']));
 test_assert('geen ne-lege-string-filter', !str_contains(implode("\n", $calls), "ne ''"));
 
 // Mislukte bundel: alleen die contracten onvolledig, geen exception

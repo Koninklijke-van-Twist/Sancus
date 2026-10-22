@@ -4855,6 +4855,7 @@ function project_contract_summary_rows_batched(string $company, array $contracts
     $headerBy = [];
     $planningBy = [];
     $projectenBy = [];
+    $salespersonBy = [];
 
     // Golf 1: vijf entiteiten per bundel contracten (or-keten op het contractnummer)
     $calls = [];
@@ -4865,7 +4866,9 @@ function project_contract_summary_rows_batched(string $company, array $contracts
             'workorders' => ['AppWerkorders', SANCUS_WERKORDER_SELECT . ',Contract_No', 'Contract_No'],
             'headers' => ['AppMaintenanceContracts', SANCUS_CONTRACT_BY_CUSTOMER_SELECT, 'Contract_No'],
             'planning' => ['ContractPlanningsregels', SANCUS_PLANNING_SELECT . ',Contract_No', 'Contract_No'],
-            'projecten' => ['Projecten', SANCUS_PROJECTEN_STATUS_SELECT, 'KVT_Contract_No'],
+            'projecten' => ['Projecten', SANCUS_PROJECTEN_STATUS_SELECT . ',KVT_Sales_Person_Code', 'KVT_Contract_No'],
+            // Verkoper per contract (lijstkolom): zelfde bron als de accountmanager-kaart
+            'onderhoud' => ['Onderhoudscontract', SANCUS_ONDERHOUDSCONTRACT_SELECT, 'Contract_No'],
         ];
         foreach ($specs as $kind => [$entity, $select, $field]) {
             $label = $kind . '_' . $index;
@@ -4913,6 +4916,12 @@ function project_contract_summary_rows_batched(string $company, array $contracts
                     break;
                 case 'projecten':
                     $projectenBy[$key][] = $row;
+                    break;
+                case 'onderhoud':
+                    $code = project_odata_scalar_string($row['Salesperson_Code'] ?? null);
+                    if ($code !== '' && !isset($salespersonBy[$key])) {
+                        $salespersonBy[$key] = $code;
+                    }
                     break;
             }
         }
@@ -5077,10 +5086,50 @@ function project_contract_summary_rows_batched(string $company, array $contracts
             'starting_date' => $base['starting_date'],
             'metrics' => project_header_metrics($countProjects, $lines),
             'load_error' => false,
+            'salesperson' => project_contract_list_salesperson($company, $projectenBy[$key] ?? [], $ttl, (string) ($salespersonBy[$key] ?? '')),
         ];
     }
 
     return $out;
+}
+
+/**
+ * Verkoper van een lijstrij: Onderhoudscontract.Salesperson_Code, anders
+ * Projecten.KVT_Sales_Person_Code (meest voorkomend), met de naam uit de gecachte verkoperslijst.
+ *
+ * @param list<array<string,mixed>> $projectenRows
+ * @return array{code:string,name:string}
+ */
+function project_contract_list_salesperson(string $company, array $projectenRows, int $ttl = 3600, string $onderhoudCode = ''): array
+{
+    $counts = [];
+    if ($onderhoudCode !== '') {
+        $counts[$onderhoudCode] = PHP_INT_MAX;
+    }
+    foreach ($projectenRows as $row) {
+        $code = is_array($row) ? project_odata_scalar_string($row['KVT_Sales_Person_Code'] ?? null) : '';
+        if ($code !== '') {
+            $counts[$code] = ($counts[$code] ?? 0) + 1;
+        }
+    }
+    if ($counts === []) {
+        return ['code' => '', 'name' => ''];
+    }
+    arsort($counts);
+    $code = (string) array_key_first($counts);
+    $name = '';
+    try {
+        foreach (project_fetch_salespersons($company, $ttl) as $person) {
+            if (strcasecmp((string) $person['code'], $code) === 0) {
+                $name = (string) $person['name'];
+                break;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[Sancus] verkopernaam lijst mislukt: ' . substr($e->getMessage(), 0, 300));
+    }
+
+    return ['code' => $code, 'name' => $name];
 }
 
 /**
