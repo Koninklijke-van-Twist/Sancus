@@ -293,6 +293,81 @@ function project_load_resolve_one(
 }
 
 /**
+ * Drie zoekvelden + Datum van/tot: los verkoper en klant op en stuur door naar de
+ * gecombineerde lijst. Meerdere kandidaten geven een keuzelijst voor dat ene veld.
+ *
+ * @return array<string,mixed>
+ */
+function project_load_resolve_combined(
+    string $company,
+    string $contractQuery,
+    string $salespersonQuery,
+    string $customerQuery,
+    string $dateFrom,
+    string $dateTo,
+    int $ttl,
+    string $closedFilter = 'all'
+): array {
+    $notFound = [
+        'ok' => false,
+        'done' => true,
+        'error' => 'not_found',
+        'progress' => 100,
+        'label' => 'not_found',
+    ];
+    $salespersonCode = '';
+    if ($salespersonQuery !== '') {
+        $sp = project_resolve_salesperson_field($company, $salespersonQuery, $ttl);
+        if ($sp['status'] === 'none') {
+            return $notFound;
+        }
+        if ($sp['status'] === 'many') {
+            return [
+                'ok' => true,
+                'done' => true,
+                'salesperson_matches' => $sp['matches'],
+                'progress' => 100,
+                'label' => 'salesperson_choose',
+            ];
+        }
+        $salespersonCode = (string) $sp['person']['code'];
+    }
+    $customerNo = '';
+    if ($customerQuery !== '') {
+        $cu = project_resolve_customer_field($company, $customerQuery, $ttl);
+        if ($cu['status'] === 'none') {
+            return $notFound;
+        }
+        if ($cu['status'] === 'many') {
+            return [
+                'ok' => true,
+                'done' => true,
+                'customer_matches' => $cu['matches'],
+                'progress' => 100,
+                'label' => 'customer_choose',
+            ];
+        }
+        $customerNo = (string) $cu['customer']['no'];
+    }
+    [$dateFrom, $dateTo] = project_normalize_date_range($dateFrom, $dateTo);
+
+    return [
+        'ok' => true,
+        'done' => true,
+        'redirect_combined' => [
+            'contract' => $contractQuery,
+            'salesperson' => $salespersonCode,
+            'customer' => $customerNo,
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'closed' => $closedFilter === 'all' ? '' : $closedFilter,
+        ],
+        'progress' => 100,
+        'label' => 'redirect',
+    ];
+}
+
+/**
  * Eén stap in progressive load. Elke HTTP-request reset PHP-tijdslimiet.
  *
  * @param array<string,mixed> $params
@@ -320,7 +395,30 @@ function project_load_run_step(string $loadId, string $step, array $params = [])
         project_reset_data_cached_at();
         project_set_force_refresh($forceRefresh);
 
+        $salespersonQuery = trim((string) ($params['salesperson'] ?? ''));
+        $customerQuery = trim((string) ($params['customer'] ?? ''));
+        $direct = !empty($params['direct']);
+        $closedFilter = project_normalize_closed_filter((string) ($params['closed'] ?? 'all'));
+        if (!$direct && ($salespersonQuery !== '' || $customerQuery !== '' || $dateFrom !== '' || $dateTo !== '' || $closedFilter !== 'all')) {
+            return project_load_resolve_combined($company, $query, $salespersonQuery, $customerQuery, $dateFrom, $dateTo, $ttl, $closedFilter);
+        }
+
+        // Datum van/tot filtert op de startdatum van contracten (lijst), niet op posten:
+        // één contract toont altijd alle regels.
+        $dateFrom = '';
+        $dateTo = '';
+
         $resolved = project_load_resolve_search($company, $query, $ttl);
+        if ($resolved === null && $direct) {
+            // Klik op een contract in een lijst: nooit verkoper- of klantkeuze tonen
+            return [
+                'ok' => false,
+                'done' => true,
+                'error' => 'not_found',
+                'progress' => 100,
+                'label' => 'not_found',
+            ];
+        }
         if ($resolved === null) {
             $matches = project_find_salespersons($company, $query, $ttl, 20);
             if (count($matches) === 1) {

@@ -637,7 +637,8 @@ function project_normalize_project_row(array $row): array
 
 /**
  * Job Status geldt als afgesloten bij 'Completed' (enumwaarde) of 'Voltooid'
- * (caption die BC/Mímir in responses teruggeeft), hoofdletterongevoelig en getrimd.
+ * (caption die BC/Mímir in responses teruggeeft), en de varianten 'Afgesloten'/'Closed';
+ * hoofdletterongevoelig en getrimd.
  * Een ruwe numerieke code ('3') telt hier niet als afgesloten.
  */
 function project_job_status_is_closed(string $status): bool
@@ -649,7 +650,7 @@ function project_job_status_is_closed(string $status): bool
         $status = strtolower($status);
     }
 
-    return $status === 'completed' || $status === 'voltooid';
+    return in_array($status, ['completed', 'voltooid', 'closed', 'afgesloten'], true);
 }
 
 /**
@@ -4396,4 +4397,391 @@ function project_flatten_grouped_rows(array $posten): array
     }
 
     return $rows;
+}
+
+/**
+ * Datum van/tot op de startdatum van een contract (Starting_Date).
+ * Leeg veld = geen onder- of bovengrens. Zonder grenzen telt elk contract.
+ * Met een grens valt een contract zonder (geldige) startdatum weg.
+ */
+function project_contract_start_in_range(string $startingDate, string $dateFrom = '', string $dateTo = ''): bool
+{
+    $dateFrom = trim($dateFrom);
+    $dateTo = trim($dateTo);
+    if ($dateFrom === '' && $dateTo === '') {
+        return true;
+    }
+    $start = substr(trim($startingDate), 0, 10);
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $start) !== 1 || $start === '0001-01-01') {
+        return false;
+    }
+    if ($dateFrom !== '' && $start < $dateFrom) {
+        return false;
+    }
+    if ($dateTo !== '' && $start > $dateTo) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Zet van/tot in de goede volgorde (zelfde gedrag als het oude filter vóór #14).
+ *
+ * @return array{0:string,1:string}
+ */
+function project_normalize_date_range(string $dateFrom, string $dateTo): array
+{
+    if ($dateFrom !== '' && $dateTo !== '' && $dateFrom > $dateTo) {
+        return [$dateTo, $dateFrom];
+    }
+
+    return [$dateFrom, $dateTo];
+}
+
+/**
+ * Contractkoppen (o.a. Starting_Date) voor een lijst contractnummers via AppMaintenanceContracts.
+ * Velden zijn dezelfde als bij klantzoeken (SANCUS_CUSTOMER_CONTRACT_HEADER_SELECT).
+ *
+ * @param list<string> $contractNos
+ * @return array<string,array<string,string>> genormaliseerd contractnummer => kop
+ */
+function project_fetch_contract_headers_by_nos(string $company, array $contractNos, int $ttl = 3600): array
+{
+    $clean = [];
+    foreach ($contractNos as $contractNo) {
+        $contractNo = trim((string) $contractNo);
+        if ($contractNo !== '' && project_is_bc_code($contractNo)) {
+            $clean[project_normalize_match_text($contractNo)] = $contractNo;
+        }
+    }
+    $rawRows = [];
+    foreach (array_chunk(array_values($clean), max(1, SANCUS_JOB_FILTER_CHUNK)) as $chunk) {
+        $filter = project_odata_or_eq('Contract_No', $chunk);
+        if ($filter === '') {
+            continue;
+        }
+        foreach (project_try_fetch_rows($company, 'AppMaintenanceContracts', [
+            '$select' => SANCUS_CUSTOMER_CONTRACT_HEADER_SELECT,
+            '$filter' => $filter,
+        ], $ttl) as $row) {
+            $rawRows[] = $row;
+        }
+    }
+    $out = [];
+    foreach (project_contract_headers_from_rows($rawRows) as $header) {
+        $out[project_normalize_match_text((string) $header['contract_no'])] = $header;
+    }
+
+    return $out;
+}
+
+/**
+ * Alle contracten van een verkoper (Onderhoudscontract, Projecten, klantkaart-terugval).
+ *
+ * @return list<array{contract_no:string,customer_no:string,customer_name:string,contract_value:?float}>
+ */
+function project_salesperson_contract_list(string $company, string $salespersonCode, int $ttl = 3600): array
+{
+    $contractNos = [];
+    $seen = [];
+    foreach ([
+        project_fetch_onderhoudscontract_nos_for_salesperson($company, $salespersonCode, '', $ttl),
+        project_fetch_contract_nos_for_salesperson($company, $salespersonCode, $ttl),
+    ] as $sourceNos) {
+        foreach ($sourceNos as $sourceNo) {
+            $key = project_normalize_match_text($sourceNo);
+            if (!isset($seen[$key])) {
+                $seen[$key] = true;
+                $contractNos[] = $sourceNo;
+            }
+        }
+    }
+    $customerContracts = [];
+    try {
+        $customerNos = [];
+        foreach (project_fetch_customers_by_salesperson($company, $salespersonCode, $ttl) as $customer) {
+            $customerNos[] = $customer['no'];
+        }
+        $customerContracts = project_fetch_contracts_by_customer_nos($company, $customerNos, $ttl);
+    } catch (Throwable $customerError) {
+        error_log('[Sancus] verkoper-terugval via klant mislukt: ' . substr($customerError->getMessage(), 0, 500));
+    }
+
+    return project_merge_salesperson_contracts($contractNos, $customerContracts);
+}
+
+/**
+ * Eén lijstrij met dezelfde totalen als de kaarten. Alle regels van het contract
+ * (geen datumfilter op de posten): het datumfilter werkt op de startdatum.
+ *
+ * @param array{contract_no:string,customer_no:string,customer_name:string,contract_value:?float} $contract
+ * @return array<string,mixed>
+ */
+function project_contract_summary_row(string $company, array $contract, int $ttl = 3600, bool $includeUnbookedCosts = false): array
+{
+    $contractNo = (string) $contract['contract_no'];
+    try {
+        $overview = project_fetch_contract_overview($company, $contractNo, '', '', $ttl, null, $includeUnbookedCosts);
+        $projects = is_array($overview['projects'] ?? null) ? $overview['projects'] : [];
+        $lines = is_array($overview['lines'] ?? null) ? $overview['lines'] : [];
+        $lines = project_apply_unbooked_cost_preference($lines, $includeUnbookedCosts);
+        $countProjects = is_array($overview['count_projects'] ?? null)
+            ? $overview['count_projects']
+            : project_projects_for_closed_card($company, $contractNo, $projects, $ttl);
+        $customerName = trim((string) ($overview['customer_name'] ?? ''));
+        $customerNo = trim((string) ($overview['customer_no'] ?? ''));
+
+        return [
+            'contract_no' => $contractNo,
+            'customer_name' => $customerName !== '' ? $customerName : (string) $contract['customer_name'],
+            'customer_no' => $customerNo !== '' ? $customerNo : (string) $contract['customer_no'],
+            'contract_value' => $overview['contract_value'] ?? $contract['contract_value'],
+            'starting_date' => (string) ($contract['starting_date'] ?? ''),
+            'metrics' => project_header_metrics($countProjects, $lines),
+            'load_error' => false,
+        ];
+    } catch (Throwable $error) {
+        error_log('[Sancus] contract ' . $contractNo . ' in lijst mislukt: ' . substr($error->getMessage(), 0, 500));
+
+        return [
+            'contract_no' => $contractNo,
+            'customer_name' => (string) $contract['customer_name'],
+            'customer_no' => (string) $contract['customer_no'],
+            'contract_value' => $contract['contract_value'],
+            'starting_date' => (string) ($contract['starting_date'] ?? ''),
+            'metrics' => null,
+            'load_error' => true,
+        ];
+    }
+}
+
+/**
+ * Lost een verkoperveld op naar één code: exacte code wint, anders één naam-match.
+ *
+ * @return array{status:string,person:?array{code:string,name:string},matches:list<array{code:string,name:string}>}
+ */
+function project_resolve_salesperson_field(string $company, string $query, int $ttl = 3600): array
+{
+    $query = trim($query);
+    foreach (project_fetch_salespersons($company, $ttl) as $person) {
+        if (strcasecmp((string) $person['code'], $query) === 0) {
+            return ['status' => 'one', 'person' => $person, 'matches' => [$person]];
+        }
+    }
+    $matches = project_find_salespersons($company, $query, $ttl, 20);
+    if (count($matches) === 1) {
+        return ['status' => 'one', 'person' => $matches[0], 'matches' => $matches];
+    }
+
+    return ['status' => $matches === [] ? 'none' : 'many', 'person' => null, 'matches' => $matches];
+}
+
+/**
+ * Lost een klantveld op naar één klantnummer (zelfde matching als klantzoeken, #16).
+ *
+ * @return array{status:string,customer:?array{no:string,name:string},matches:list<array{no:string,name:string}>}
+ */
+function project_resolve_customer_field(string $company, string $query, int $ttl = 3600): array
+{
+    $matches = project_find_customers($company, trim($query), $ttl, 20);
+    if (count($matches) === 1) {
+        return ['status' => 'one', 'customer' => $matches[0], 'matches' => $matches];
+    }
+
+    return ['status' => $matches === [] ? 'none' : 'many', 'customer' => null, 'matches' => $matches];
+}
+
+/**
+ * Gecombineerd zoeken: contract/project, verkoper (code) en klant (nummer, incl. MAIN_DEBTOR)
+ * met AND, plus Datum van/tot op de startdatum van het contract.
+ *
+ * @return array{
+ *   found:bool,
+ *   salesperson:?array{code:string,name:string},
+ *   customer:?array{no:string,name:string},
+ *   rows:list<array<string,mixed>>
+ * }
+ */
+function project_combined_contract_rows(
+    string $company,
+    string $contractQuery,
+    string $salespersonCode,
+    string $customerNo,
+    string $dateFrom = '',
+    string $dateTo = '',
+    int $ttl = 3600,
+    bool $includeUnbookedCosts = false,
+    bool $withMetrics = true,
+    string $closedFilter = 'all'
+): array {
+    $closedFilter = project_normalize_closed_filter($closedFilter);
+    if ($closedFilter !== 'all') {
+        $withMetrics = true;
+    }
+    $contractQuery = trim($contractQuery);
+    $salespersonCode = trim($salespersonCode);
+    $customerNo = trim($customerNo);
+    [$dateFrom, $dateTo] = project_normalize_date_range(trim($dateFrom), trim($dateTo));
+
+    $person = null;
+    $customer = null;
+    /** @var array<string,array<string,mixed>>|null $candidates */
+    $candidates = null;
+    $intersect = static function (?array $current, array $contracts): array {
+        $next = [];
+        foreach ($contracts as $contract) {
+            $key = project_normalize_match_text((string) $contract['contract_no']);
+            if ($current !== null && !isset($current[$key])) {
+                continue;
+            }
+            if ($current !== null) {
+                foreach ($contract as $field => $value) {
+                    if (($current[$key][$field] ?? '') === '' || ($current[$key][$field] ?? null) === null) {
+                        $current[$key][$field] = $value;
+                    }
+                }
+                $next[$key] = $current[$key];
+            } else {
+                $next[$key] = $contract;
+            }
+        }
+
+        return $next;
+    };
+
+    if ($salespersonCode !== '') {
+        foreach (project_fetch_salespersons($company, $ttl) as $candidate) {
+            if (strcasecmp((string) $candidate['code'], $salespersonCode) === 0) {
+                $person = $candidate;
+                break;
+            }
+        }
+        if ($person === null) {
+            return ['found' => false, 'salesperson' => null, 'customer' => null, 'rows' => []];
+        }
+        $candidates = $intersect($candidates, project_salesperson_contract_list($company, $person['code'], $ttl));
+    }
+
+    if ($customerNo !== '') {
+        $groups = project_customer_contract_groups($company, $customerNo, $ttl);
+        $customer = is_array($groups['customer'] ?? null) ? $groups['customer'] : ['no' => $customerNo, 'name' => ''];
+        $list = [];
+        foreach ((array) ($groups['groups'] ?? []) as $group) {
+            foreach ((array) ($group['contracts'] ?? []) as $header) {
+                $list[] = [
+                    'contract_no' => (string) $header['contract_no'],
+                    'customer_no' => (string) ($header['customer_no'] ?? ''),
+                    'customer_name' => (string) ($header['customer_name'] ?? ''),
+                    'contract_value' => null,
+                    'starting_date' => (string) ($header['starting_date'] ?? ''),
+                ];
+            }
+        }
+        $candidates = $intersect($candidates, $list);
+    }
+
+    if ($contractQuery !== '') {
+        $codes = array_map('project_normalize_match_text', project_codes_from_user_input($contractQuery));
+        $needle = project_normalize_match_text($contractQuery);
+        if ($candidates === null) {
+            // Alleen een contract/project: lijst met dat ene contract (als het bestaat)
+            $list = [];
+            foreach (project_codes_from_user_input($contractQuery) as $code) {
+                $list[] = ['contract_no' => $code, 'customer_no' => '', 'customer_name' => '', 'contract_value' => null];
+            }
+            $candidates = $intersect(null, $list);
+            $headers = project_fetch_contract_headers_by_nos($company, array_column($candidates, 'contract_no'), $ttl);
+            $candidates = array_intersect_key($candidates, $headers);
+        } else {
+            $candidates = array_filter($candidates, static function (array $contract) use ($codes, $needle): bool {
+                $key = project_normalize_match_text((string) $contract['contract_no']);
+                return in_array($key, $codes, true) || ($needle !== '' && str_contains($key, $needle));
+            });
+        }
+    }
+
+    $candidates = $candidates ?? [];
+    if ($candidates !== [] && ($dateFrom !== '' || $dateTo !== '')) {
+        $missing = [];
+        foreach ($candidates as $key => $contract) {
+            if (trim((string) ($contract['starting_date'] ?? '')) === '') {
+                $missing[] = (string) $contract['contract_no'];
+            }
+        }
+        if ($missing !== []) {
+            foreach (project_fetch_contract_headers_by_nos($company, $missing, $ttl) as $key => $header) {
+                if (isset($candidates[$key])) {
+                    $candidates[$key]['starting_date'] = (string) ($header['starting_date'] ?? '');
+                    foreach (['customer_no', 'customer_name'] as $field) {
+                        if (($candidates[$key][$field] ?? '') === '') {
+                            $candidates[$key][$field] = (string) ($header[$field] ?? '');
+                        }
+                    }
+                }
+            }
+        }
+        $candidates = array_filter($candidates, static function (array $contract) use ($dateFrom, $dateTo): bool {
+            return project_contract_start_in_range((string) ($contract['starting_date'] ?? ''), $dateFrom, $dateTo);
+        });
+    }
+
+    $contracts = array_values($candidates);
+    usort($contracts, static function (array $a, array $b): int {
+        return strnatcasecmp((string) $b['contract_no'], (string) $a['contract_no']);
+    });
+
+    $rows = [];
+    foreach ($contracts as $contract) {
+        $contract += ['customer_no' => '', 'customer_name' => '', 'contract_value' => null, 'starting_date' => ''];
+        $rows[] = $withMetrics
+            ? project_contract_summary_row($company, $contract, $ttl, $includeUnbookedCosts)
+            : $contract + ['metrics' => null, 'load_error' => false];
+    }
+    if ($closedFilter !== 'all') {
+        $rows = array_values(array_filter($rows, static function (array $row) use ($closedFilter): bool {
+            return project_row_matches_closed_filter($row, $closedFilter);
+        }));
+    }
+
+    return [
+        'found' => true,
+        'salesperson' => $person,
+        'customer' => $customer,
+        'rows' => $rows,
+    ];
+}
+
+/**
+ * Filter-dropdown: 'all' (Beide, standaard), 'closed' (alleen 100% afgesloten), 'open' (<100%).
+ */
+function project_normalize_closed_filter(string $value): string
+{
+    $value = strtolower(trim($value));
+
+    return in_array($value, ['closed', 'open'], true) ? $value : 'all';
+}
+
+/**
+ * Zelfde telling als de kaart '% afgesloten' (project_header_metrics). 100% = alle
+ * projecten afgesloten (op aantallen, niet op het afgeronde percentage). Een contract
+ * zonder projecten is 0% en dus niet afgesloten. Zonder metrics (laadfout) valt de
+ * rij weg zodra er gefilterd wordt.
+ *
+ * @param array<string,mixed> $row
+ */
+function project_row_matches_closed_filter(array $row, string $filter): bool
+{
+    $filter = project_normalize_closed_filter($filter);
+    if ($filter === 'all') {
+        return true;
+    }
+    $metrics = is_array($row['metrics'] ?? null) ? $row['metrics'] : null;
+    if ($metrics === null) {
+        return false;
+    }
+    $total = (int) ($metrics['closed_total'] ?? 0);
+    $fully = $total > 0 && (int) ($metrics['closed'] ?? 0) >= $total;
+
+    return $filter === 'closed' ? $fully : !$fully;
 }
