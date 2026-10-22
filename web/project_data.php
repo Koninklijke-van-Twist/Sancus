@@ -108,7 +108,8 @@ function project_is_bc_code(string $value): bool
     if (preg_match('/[\t\r\n]/', $value) === 1) {
         return false;
     }
-    if (preg_match('/^[A-Za-z][A-Za-z0-9._\-\/]*$/', $value) !== 1) {
+    // Contractnummers kunnen puur numeriek zijn (bijv. 40001482)
+    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._\-\/]*$/', $value) !== 1) {
         return false;
     }
 
@@ -162,6 +163,10 @@ function project_codes_from_user_input(string $raw): array
     foreach ($tokens as $token) {
         $token = trim((string) $token, " \t\n\r\0\x0B\"'`");
         if ($token === '' || project_is_header_token($token) || !project_is_bc_code($token)) {
+            continue;
+        }
+        // In een plak alleen lange numerieke codes; korte getallen zijn bedragen/aantallen
+        if (ctype_digit($token[0]) && preg_match('/^\d{5,20}$/', $token) !== 1) {
             continue;
         }
         $out[$token] = $token;
@@ -1068,7 +1073,12 @@ function project_match_customers(array $customers, string $query, int $limit = 8
             $exact[] = $row;
             continue;
         }
-        $partial[] = $row;
+        // Alleen echte treffers: als BC/Mímir de $filter negeert, komt anders de hele klantenlijst terug
+        $noHit = $noKey !== '' && str_contains($noKey, $needle);
+        $nameHit = $nameKey !== '' && str_contains($nameKey, $needle);
+        if ($noHit || $nameHit) {
+            $partial[] = $row;
+        }
     }
 
     $chosen = $exact !== [] ? $exact : $partial;

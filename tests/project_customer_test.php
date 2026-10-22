@@ -359,6 +359,20 @@ test_assert('index stuurt door naar customer.php', str_contains($index, 'custome
 test_assert('index kent redirect_customer', str_contains($index, 'redirect_customer'));
 test_assert('klantgroep-label', LOC('sancus.customer.group', 'Engie') === 'Klantgroep Engie');
 
+// Genegeerde $filter: ongefilterde klantenlijst mag niet als keuzelijst terugkomen
+$unfiltered = [
+    ['no' => '1', 'name' => '302 EI DATA CENTER'],
+    ['no' => '2', 'name' => '4SOME'],
+    ['no' => '3', 'name' => 'AVEBE'],
+    ['no' => '4', 'name' => 'Vitens N.V.'],
+];
+$vitens = project_match_customers($unfiltered, 'Vitens');
+test_assert('alleen echte klanttreffer', count($vitens) === 1 && $vitens[0]['no'] === '4', json_encode($vitens));
+test_assert('geen treffer geeft lege lijst', project_match_customers($unfiltered, '40001482') === []);
+test_assert('numeriek contractnummer is bc-code', project_is_bc_code('40001482'));
+test_assert('numeriek contractnummer als zoekcode', project_codes_from_user_input('40001482') === ['40001482']);
+test_assert('kort getal in plak telt niet', project_codes_from_user_input("CT26000243 12 3,5") === ['CT26000243']);
+
 if ($failures > 0) {
     fwrite(STDERR, $failures . " failed\n");
     exit(1);
