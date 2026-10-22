@@ -161,7 +161,7 @@ test_assert('verkooppost zonder Line_Amount_LCY telt mee als gefactureerd', abs(
 $saleLcy = project_normalize_posten_row(['Entry_Type' => 'Sale', 'Line_Amount_LCY' => -100.0, 'Line_Amount' => -90.0]);
 test_assert('Line_Amount_LCY wint als het er wel is', abs($saleLcy['revenue'] - 100.0) < 0.001);
 test_assert('posten-select vraagt Line_Amount op', str_contains(SANCUS_POSTEN_SELECT, ',Line_Amount\'') || str_ends_with(SANCUS_POSTEN_SELECT, ',Line_Amount'));
-test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v3' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
+test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v4' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
 
 // Contractscope (Ariadne): alleen KVT_Contract_No-projecten; plus posten met eigen LVS_Contract_No
 [$scopeP, $scopeW] = project_contract_scope('CT26000009', [['no' => 'PRJ1', 'contract_no' => 'CT26000009'], ['no' => 'PRJ2605125', 'contract_no' => '']], [['no' => 'WO1', 'job_no' => 'PRJ1'], ['no' => 'WO2605781', 'job_no' => 'PRJ2605125'], ['no' => 'WO0', 'job_no' => '']]);
@@ -172,6 +172,15 @@ $tagged = project_contract_tagged_posten_lines('CT26000009', ['PRJ1'], [
     ['Entry_No' => 3, 'Job_No' => 'PRJ1', 'Entry_Type' => 'Usage', 'Total_Cost_LCY' => 5, 'LVS_Contract_No' => 'CT26000009'],
 ]);
 test_assert('LVS_Contract_No-posten: alleen getagde rij buiten de scope (geen dubbeltelling)', count($tagged) === 1 && abs($tagged[0]['cost'] - 135.66) < 0.001);
+
+// Totaal materiaal/uren/km = kosten per soort (positief); som = Kosten
+$typeMetrics = project_header_metrics([], [
+    project_normalize_posten_row(['Entry_Type' => 'Usage', 'Type' => 'Item', 'Total_Cost_LCY' => 10.0, 'Line_Amount' => -15.0, 'Quantity' => 1]),
+    project_normalize_posten_row(['Entry_Type' => 'Usage', 'Type' => 'Resource', 'Work_Type_Code' => 'UUR', 'Total_Cost_LCY' => 20.0, 'Quantity' => 2]),
+    project_normalize_posten_row(['Entry_Type' => 'Usage', 'Type' => 'Resource', 'Work_Type_Code' => 'KM', 'Total_Cost_LCY' => 3.0, 'Quantity' => 10]),
+    project_normalize_posten_row(['Entry_Type' => 'Sale', 'Line_Amount' => -100.0]),
+]);
+test_assert('totaal per soort positief en som = kosten', abs($typeMetrics['material_money'] - 10) < 0.001 && abs($typeMetrics['hours_money'] - 20) < 0.001 && abs($typeMetrics['kilometers_money'] - 3) < 0.001 && abs($typeMetrics['material_money'] + $typeMetrics['hours_money'] + $typeMetrics['kilometers_money'] - $typeMetrics['cost']) < 0.001, json_encode($typeMetrics));
 
 echo $failures === 0 ? "\nAlle tests geslaagd.\n" : "\n{$failures} test(s) mislukt.\n";
 exit($failures === 0 ? 0 : 1);

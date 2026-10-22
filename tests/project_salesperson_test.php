@@ -258,7 +258,7 @@ test_assert('metrics kosten', abs($metrics['cost'] - 10.0) < 0.001);
 test_assert('metrics omzet', abs($metrics['revenue'] - 25.0) < 0.001);
 test_assert('metrics winst', abs($metrics['profit'] - 15.0) < 0.001);
 test_assert('metrics winstpct', $metrics['profit_pct'] !== null && abs($metrics['profit_pct'] - 60.0) < 0.001);
-test_assert('metrics materiaal', abs($metrics['material_money'] - (-10.0)) < 0.001 && abs($metrics['material_qty'] - 2.0) < 0.001);
+test_assert('metrics materiaal (kosten, positief)', abs($metrics['material_money'] - 10.0) < 0.001 && abs($metrics['material_qty'] - 2.0) < 0.001);
 test_assert('metrics afgesloten', $metrics['closed'] === 1 && $metrics['closed_total'] === 2 && $metrics['closed_percent'] === 50);
 test_assert('geen omzet geeft lege winstpct', project_header_metrics([], [])['profit_pct'] === null);
 

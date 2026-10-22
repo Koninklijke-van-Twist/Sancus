@@ -11,7 +11,8 @@ require_once __DIR__ . '/odata.php';
  * Constants
  */
 // v2: Verkoop-posten tellen mee (Line_Amount); oude lijsttotalen vervallen
-const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v3'; // v3: contractscope via KVT_Contract_No + LVS_Contract_No-posten
+// v3: contractscope via KVT_Contract_No + LVS_Contract_No-posten; v4: totaal materiaal/uren/km = kosten (positief)
+const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v4';
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY,Line_Amount';
 const SANCUS_PROJECT_SELECT = 'No,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
@@ -716,7 +717,8 @@ function project_header_metrics(array $projects, array $lines): array
     $profit = $revenue - $cost;
     $closed = project_closed_project_stats($projects);
     $money = static function (string $type) use ($byType): float {
-        return (float) ($byType[$type]['revenue'] ?? 0) - (float) ($byType[$type]['cost'] ?? 0);
+        // Totaal per soort = kosten (positief, zelfde teken als Kosten); som materiaal+uren+km = kosten
+        return (float) ($byType[$type]['cost'] ?? 0);
     };
 
     return [
