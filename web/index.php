@@ -1690,14 +1690,14 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                 if ((panel.getAttribute('data-refresh') || '') === '1') {
                     combinedParams.set('refresh', '1');
                 }
-                window.location.href = 'salesperson.php?' + combinedParams.toString();
+                navigateWithWatchdog('salesperson.php?' + combinedParams.toString());
                 return;
             }
 
             if (data.redirect_salesperson && data.redirect_salesperson.code) {
                 var salespersonParams = pageParams();
                 salespersonParams.set('salesperson', data.redirect_salesperson.code);
-                window.location.href = 'salesperson.php?' + salespersonParams.toString();
+                navigateWithWatchdog('salesperson.php?' + salespersonParams.toString());
                 return;
             }
 
@@ -1735,7 +1735,7 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
             if (data.redirect_customer && data.redirect_customer.no) {
                 var customerParams = pageParams();
                 customerParams.set('customer', data.redirect_customer.no);
-                window.location.href = 'customer.php?' + customerParams.toString();
+                navigateWithWatchdog('customer.php?' + customerParams.toString());
                 return;
             }
 
@@ -1867,8 +1867,27 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
         }, LOAD_WATCHDOG_MS);
     }
     armWatchdog();
+
+    // Na 'Pagina openen…' rendert de lijstpagina server-side. Blijft die hangen, dan
+    // de navigatie afbreken en de foutmelding tonen i.p.v. eeuwig 100% (#23).
+    var NAV_WATCHDOG_MS = 120 * 1000;
+    var navWatchdog = null;
+    function navigateWithWatchdog(url) {
+        setProgress(100, 'redirect');
+        window.clearTimeout(watchdog);
+        window.clearTimeout(navWatchdog);
+        navWatchdog = window.setTimeout(function () {
+            if (typeof window.stop === 'function') {
+                window.stop();
+            }
+            failed = true;
+            setProgress(100, 'timeout');
+        }, NAV_WATCHDOG_MS);
+        window.location.href = url;
+    }
     window.addEventListener('pagehide', function () {
         window.clearTimeout(watchdog);
+        window.clearTimeout(navWatchdog);
     });
 
     setProgress(2, 'resolve');
