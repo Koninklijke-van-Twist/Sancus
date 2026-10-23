@@ -5560,9 +5560,28 @@ function project_list_rows_with_cached_metrics(string $company, array $rows, boo
 {
     $oldest = null;
     $missing = [];
+    // Eerst de nightly alle-contracten-cache (één bestand), daarna de cache per contract.
+    $nightlyByKey = [];
+    $nightlyAt = null;
+    if (!project_is_force_refresh()) {
+        $nightly = project_all_contracts_cache_read($company, $includeUnbookedCosts, $ttl);
+        if (is_array($nightly)) {
+            $nightlyAt = (int) $nightly['generated_at'];
+            foreach ($nightly['rows'] as $nightlyRow) {
+                if (is_array($nightlyRow) && empty($nightlyRow['load_error']) && is_array($nightlyRow['metrics'] ?? null)) {
+                    $nightlyByKey[project_normalize_match_text((string) ($nightlyRow['contract_no'] ?? ''))] = $nightlyRow;
+                }
+            }
+        }
+    }
     foreach ($rows as $index => $row) {
         project_reset_data_cached_at();
+        $key = project_normalize_match_text((string) ($row['contract_no'] ?? ''));
         $cached = project_list_summary_cache_get($company, (string) ($row['contract_no'] ?? ''), $includeUnbookedCosts, $ttl);
+        if ($cached === null && isset($nightlyByKey[$key])) {
+            $cached = $nightlyByKey[$key];
+            project_note_data_cached_at((int) $nightlyAt);
+        }
         if ($cached === null) {
             $missing[$index] = $row;
             continue;

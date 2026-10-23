@@ -150,7 +150,7 @@ test_assert('mislukte bundel markeert alleen die bundel als onvolledig', $errors
 $sp = (string) file_get_contents(dirname(__DIR__) . '/web/salesperson.php');
 $ix = (string) file_get_contents(dirname(__DIR__) . '/web/index.php');
 test_assert('lijstpagina vraagt koppen zonder totalen op', str_contains($sp, "// Alleen de contractkoppen") && str_contains($sp, "'summary_stream'") && str_contains($sp, 'session_write_close()'));
-test_assert('lijst pas zichtbaar na alle totalen, waakhond bij stilstand', str_contains($sp, 'id="sancus-contract-list-wrap" hidden') && str_contains($sp, 'STALL_MS') && str_contains($sp, 'controller.abort()'));
+test_assert('lijst pas zichtbaar na alle totalen, waakhond bij stilstand', str_contains($sp, 'id="sancus-contract-list-wrap"') && str_contains($sp, '$allPreloaded ? \'\' : \' hidden\'') && str_contains($sp, 'STALL_MS') && str_contains($sp, 'controller.abort()'));
 test_assert('doorverwijzing naar de lijst heeft een waakhond met window.stop', str_contains($ix, "navigateWithWatchdog('salesperson.php?' + combinedParams.toString())") && str_contains($ix, 'window.stop()'));
 
 test_assert('export: klantnaam via data-xv, Klantnummer- en Verkoper-kolom, spinner echt verborgen', str_contains($sp, 'sancus-customerno-cell') && str_contains($sp, "LOC('sancus.col.customer_no')") && str_contains($sp, "setAttribute('data-xv', item.customer_name") && str_contains($sp, '.sancus-list-progress[hidden] { display: none') && str_contains($sp, "progress.style.display = 'none'"));
