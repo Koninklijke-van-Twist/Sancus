@@ -45,6 +45,15 @@ test_assert('cache per variant', $path !== project_all_contracts_cache_path($com
 project_all_contracts_cache_write($company, false, [['contract_no' => 'CT1']]);
 $read = project_all_contracts_cache_read($company, false);
 test_assert('cache lezen na schrijven', is_array($read) && ($read['rows'][0]['contract_no'] ?? '') === 'CT1' && (int) $read['generated_at'] > 0);
+$company2 = 'TestCoN_' . getmypid();
+project_all_contracts_cache_write($company2, false, [['contract_no' => 'CT9', 'customer_name' => 'Klant', 'metrics' => ['cost' => 1.0]]]);
+$filled = project_list_rows_with_cached_metrics($company2, [['contract_no' => 'CT9'], ['contract_no' => 'CT10']], false, false);
+test_assert('totalen eerst uit nightly-cache', is_array($filled['rows'][0]['metrics'] ?? null) && !isset($filled['rows'][1]['metrics']) && $filled['oldest'] !== null);
+project_set_force_refresh(true);
+$forced = project_list_rows_with_cached_metrics($company2, [['contract_no' => 'CT9']], false, false);
+project_set_force_refresh(false);
+test_assert('vernieuwen slaat nightly-cache over', !isset($forced['rows'][0]['metrics']));
+@unlink(project_all_contracts_cache_path($company2, false));
 @unlink($path);
 test_assert('geen cache = null', project_all_contracts_cache_read($company, false) === null);
 

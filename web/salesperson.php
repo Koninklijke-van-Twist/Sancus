@@ -646,11 +646,17 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($rows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.salesperson.empty')) ?></p>
             <?php else: ?>
-                <div class="sancus-list-progress" id="sancus-summary-progress" role="status" aria-live="polite">
+                <?php
+                    // Totalen die al uit de (nightly-)cache komen tellen direct mee; de tabel
+                    // verschijnt pas als álle totalen van deze pagina er zijn.
+                    $preloadedCount = count(array_filter($rows, static fn ($r): bool => is_array($r['metrics'] ?? null)));
+                    $allPreloaded = $preloadedCount === count($rows);
+                ?>
+                <div class="sancus-list-progress" id="sancus-summary-progress" role="status" aria-live="polite"<?= $allPreloaded ? ' hidden style="display:none"' : '' ?>>
                     <div class="sancus-loader-spinner" aria-hidden="true"></div>
-                    <p id="sancus-summary-status"><?= portal_h(sprintf(LOC('sancus.salesperson.loading_progress'), 0, count($rows))) ?></p>
+                    <p id="sancus-summary-status"><?= portal_h(sprintf(LOC('sancus.salesperson.loading_progress'), $preloadedCount, count($rows))) ?></p>
                 </div>
-                <div id="sancus-contract-list-wrap" hidden>
+                <div id="sancus-contract-list-wrap" data-preloaded="<?= (int) $preloadedCount ?>" data-page-total="<?= count($rows) ?>"<?= $allPreloaded ? '' : ' hidden' ?>>
                 <div class="sancus-table-toolbar">
                     <a class="sancus-btn sancus-btn-excel" href="<?= portal_h($exportUrl) ?>"
                         style="background:#1d6f42;border-color:#1d6f42;color:#fff;margin:0 8px 8px 0;"
@@ -739,6 +745,8 @@ $dataAgeLabel = $dataCachedAt !== null
     var closedFilter = table.getAttribute('data-closed-filter') || 'all';
     var STALL_MS = 180 * 1000;
     var total = rows.length;
+    var preloaded = parseInt(wrap.getAttribute('data-preloaded') || '0', 10) || 0;
+    var pageTotal = parseInt(wrap.getAttribute('data-page-total') || '0', 10) || total;
     var shown = 0;
     var finished = false;
     var texts = {
@@ -819,7 +827,7 @@ $dataAgeLabel = $dataCachedAt !== null
         progress.hidden = true;
         progress.style.display = 'none';
         wrap.hidden = false;
-        if (closedFilter !== 'all') {
+        if (closedFilter !== 'all' && total > 0) {
             var note = document.createElement('p');
             note.className = 'sancus-muted';
             note.textContent = shown === 0 ? texts.empty : format(texts.filtered, shown, total);
@@ -845,7 +853,7 @@ $dataAgeLabel = $dataCachedAt !== null
                     setRow(tr, item);
                 }
             });
-            status.textContent = format(texts.loading, Number(line.done_count) || 0, total);
+            status.textContent = format(texts.loading, preloaded + (Number(line.done_count) || 0), pageTotal);
             armStall();
             return;
         }
