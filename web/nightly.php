@@ -62,7 +62,26 @@ if ($method !== 'GET' && $method !== 'HEAD') {
     exit;
 }
 
-$startedAt = microtime(true);
+// Eén run tegelijk: een tweede verzoek wacht op de lopende run en krijgt diens antwoord.
+// flock valt vanzelf weg als het proces sterft, dus geen stale lock.
+$lockDir = __DIR__ . '/data';
+if (!is_dir($lockDir)) {
+    @mkdir($lockDir, 0750, true);
+}
+$lockHandle = fopen($lockDir . '/nightly.lock', 'c');
+$resultPath = $lockDir . '/nightly_result.json';
+if ($lockHandle !== false && !flock($lockHandle, LOCK_EX | LOCK_NB)) {
+    flock($lockHandle, LOCK_EX);
+    $last = json_decode((string) @file_get_contents($resultPath), true);
+    flock($lockHandle, LOCK_UN);
+    if (is_array($last) && isset($last['status'], $last['body'])) {
+        http_response_code((int) $last['status']);
+        echo $last['body'];
+        exit;
+    }
+}
+
+ob_start();
 $result = project_warm_contract_searches(SANCUS_NIGHTLY_SEARCH_MAX_AGE, SANCUS_NIGHTLY_CACHE_TTL);
 $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
 $failed = $result['failed'];
@@ -131,3 +150,10 @@ echo json_encode([
     ],
     'recorded_at' => date('c'),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+$body = (string) ob_get_clean();
+@file_put_contents($resultPath . '.tmp', json_encode(['status' => http_response_code() ?: 200, 'body' => $body]));
+@rename($resultPath . '.tmp', $resultPath);
+echo $body;
+if ($lockHandle !== false) {
+    flock($lockHandle, LOCK_UN);
+}
