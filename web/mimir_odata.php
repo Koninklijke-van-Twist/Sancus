@@ -96,7 +96,8 @@ function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
 
 function odata_mimir_timeout_seconds(): int
 {
-    return odata_mimir_timeout_seconds_for_sapi(php_sapi_name());
+    // Achtergrondjobs (nightly/hourly via HTTP-GET, Vernieuwen) lopen met ignore_user_abort: CLI-timeout
+    return odata_mimir_timeout_seconds_for_sapi(ignore_user_abort() ? 'cli' : php_sapi_name());
 }
 
 function odata_mimir_fail(Exception $exception): void

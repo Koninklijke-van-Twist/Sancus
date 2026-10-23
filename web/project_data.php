@@ -5482,8 +5482,20 @@ function project_build_all_contract_rows(string $company, int $ttl, bool $includ
     });
     $out = [];
     $total = count($contracts);
+    // Vorige goede rijen: een mislukte bundel overschrijft de cache niet met lege regels
+    $previous = [];
+    foreach ((project_all_contracts_cache_read($company, $includeUnbookedCosts, PHP_INT_MAX)['rows'] ?? []) as $previousRow) {
+        if (is_array($previousRow) && empty($previousRow['load_error']) && is_array($previousRow['metrics'] ?? null)) {
+            $previous[project_normalize_match_text((string) ($previousRow['contract_no'] ?? ''))] = $previousRow;
+        }
+    }
     foreach (array_chunk($contracts, max(1, SANCUS_LIST_SUMMARY_GROUP)) as $chunk) {
         @set_time_limit(600);
+        // Eén trage Mímir-call zet de circuit breaker voor het hele verzoek open; dan zou elke
+        // volgende bundel naar BC-direct gaan of mislukken. Per bundel opnieuw Mímir proberen.
+        if (function_exists('odata_mimir_circuit_reset')) {
+            odata_mimir_circuit_reset();
+        }
         try {
             $batchRows = project_contract_summary_rows_batched($company, $chunk, $ttl, $includeUnbookedCosts);
         } catch (Throwable $error) {
@@ -5494,6 +5506,10 @@ function project_build_all_contract_rows(string $company, int $ttl, bool $includ
             }
         }
         foreach ($batchRows as $row) {
+            $key = project_normalize_match_text((string) ($row['contract_no'] ?? ''));
+            if ((!empty($row['load_error']) || !is_array($row['metrics'] ?? null)) && isset($previous[$key])) {
+                $row = $previous[$key];
+            }
             project_list_summary_cache_put($company, $row, $includeUnbookedCosts);
             $out[] = $row;
         }

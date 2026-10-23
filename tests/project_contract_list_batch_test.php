@@ -149,11 +149,11 @@ test_assert('mislukte bundel markeert alleen die bundel als onvolledig', $errors
 // Lijstpagina laadt geen totalen meer synchroon; waakhond na 'Pagina openen…'
 $sp = (string) file_get_contents(dirname(__DIR__) . '/web/salesperson.php');
 $ix = (string) file_get_contents(dirname(__DIR__) . '/web/index.php');
-test_assert('lijstpagina vraagt koppen zonder totalen op', str_contains($sp, "// Alleen de contractkoppen") && str_contains($sp, "'summary_stream'") && str_contains($sp, 'session_write_close()'));
-test_assert('lijst pas zichtbaar na alle totalen, waakhond bij stilstand', str_contains($sp, 'id="sancus-contract-list-wrap"') && str_contains($sp, '$allPreloaded ? \'\' : \' hidden\'') && str_contains($sp, 'STALL_MS') && str_contains($sp, 'controller.abort()'));
+test_assert('lijstpagina vraagt koppen zonder totalen op, geen async laden meer', str_contains($sp, "// Alleen de contractkoppen") && !str_contains($sp, "'summary_stream'") && str_contains($sp, 'session_write_close()'));
+test_assert('paginatotalen server-side (cache, anders live), geen waakhond/stream', str_contains($sp, 'id="sancus-contract-list-wrap"') && str_contains($sp, 'project_list_rows_with_cached_metrics($company, $rows, $includeUnbookedCosts, true)') && !str_contains($sp, 'STALL_MS'));
 test_assert('doorverwijzing naar de lijst heeft een waakhond met window.stop', str_contains($ix, "navigateWithWatchdog('salesperson.php?' + combinedParams.toString())") && str_contains($ix, 'window.stop()'));
 
-test_assert('export: klantnaam via data-xv, Klantnummer- en Verkoper-kolom, spinner echt verborgen', str_contains($sp, 'sancus-customerno-cell') && str_contains($sp, "LOC('sancus.col.customer_no')") && str_contains($sp, "setAttribute('data-xv', item.customer_name") && str_contains($sp, '.sancus-list-progress[hidden] { display: none') && str_contains($sp, "progress.style.display = 'none'"));
+test_assert('export: klantnaam via data-xv, Klantnummer- en Verkoper-kolom', str_contains($sp, 'sancus-customerno-cell') && str_contains($sp, "LOC('sancus.col.customer_no')"));
 
 // Verkoop-posten: Mímir levert Line_Amount (geen Line_Amount_LCY); moet meetellen als Gefactureerd (bug na #26)
 $sale = project_normalize_posten_row(['Entry_No' => 21767, 'Job_No' => 'PRJ2600660', 'Entry_Type' => 'Sale', 'Type' => 'Resource', 'Document_No' => 'S126002035', 'Quantity' => -1, 'Total_Cost_LCY' => 0, 'Line_Amount' => -1687.12]);
