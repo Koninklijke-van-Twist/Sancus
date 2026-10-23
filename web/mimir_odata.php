@@ -944,6 +944,11 @@ function odata_mimir_query_body(string $company, string $table, array $odataQuer
         $body['filter'] = $filter;
     }
 
+    $route = trim((string) ($odataQuery['route'] ?? ''));
+    if ($route !== '') {
+        $body['route'] = $route;
+    }
+
     return $body;
 }
 
@@ -1284,7 +1289,7 @@ function odata_direct_query(string $company, string $table, array $odataQuery, i
 
     $params = [];
     foreach ($odataQuery as $key => $value) {
-        if (!is_string($key) || (!is_scalar($value) && $value !== null)) {
+        if (!is_string($key) || $key === 'route' || (!is_scalar($value) && $value !== null)) {
             continue;
         }
         $text = trim((string) $value);
