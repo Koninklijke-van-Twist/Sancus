@@ -62,6 +62,19 @@ if ($method !== 'GET' && $method !== 'HEAD') {
     exit;
 }
 
+$startedAt = microtime(true);
+
+// Vroege output + af en toe een spatie: proxy/webserver ziet het verzoek als levend
+// (voorloopspaties laten de JSON geldig). De run loopt hoe dan ook door (ignore_user_abort).
+$keepAlive = static function (): void {
+    echo ' ';
+    @flush();
+};
+while (ob_get_level() > 0) {
+    @ob_end_flush();
+}
+$keepAlive();
+
 // Eén run tegelijk: een tweede verzoek wacht op de lopende run en krijgt diens antwoord.
 // flock valt vanzelf weg als het proces sterft, dus geen stale lock.
 $lockDir = __DIR__ . '/data';
@@ -71,18 +84,22 @@ if (!is_dir($lockDir)) {
 $lockHandle = fopen($lockDir . '/nightly.lock', 'c');
 $resultPath = $lockDir . '/nightly_result.json';
 if ($lockHandle !== false && !flock($lockHandle, LOCK_EX | LOCK_NB)) {
-    flock($lockHandle, LOCK_EX);
+    while (!flock($lockHandle, LOCK_EX | LOCK_NB)) {
+        sleep(10);
+        $keepAlive();
+    }
+    clearstatcache(true, $resultPath);
     $last = json_decode((string) @file_get_contents($resultPath), true);
-    flock($lockHandle, LOCK_UN);
-    if (is_array($last) && isset($last['status'], $last['body'])) {
-        http_response_code((int) $last['status']);
+    // Alleen een resultaat van de run waarop we wachtten; anders (run gestorven) zelf draaien, mét lock
+    if ((int) @filemtime($resultPath) >= (int) $startedAt && is_array($last) && isset($last['status'], $last['body'])) {
+        flock($lockHandle, LOCK_UN);
         echo $last['body'];
         exit;
     }
 }
 
-ob_start();
 $result = project_warm_contract_searches(SANCUS_NIGHTLY_SEARCH_MAX_AGE, SANCUS_NIGHTLY_CACHE_TTL);
+$keepAlive();
 $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
 $failed = $result['failed'];
 
@@ -103,7 +120,9 @@ foreach ($nightlyCompanies as $nightlyCompany) {
             auth_set_current_company_context($nightlyCompany);
             project_set_force_refresh(false);
             $generatedAt = time();
-            $allRows = project_build_all_contract_rows($nightlyCompany, SANCUS_NIGHTLY_MIMIR_MAX_AGE, $nightlyUnbooked);
+            $allRows = project_build_all_contract_rows($nightlyCompany, SANCUS_NIGHTLY_MIMIR_MAX_AGE, $nightlyUnbooked, static function () use ($keepAlive): void {
+                $keepAlive();
+            });
             project_all_contracts_cache_write($nightlyCompany, $nightlyUnbooked, $allRows, $generatedAt);
             $errors = 0;
             foreach ($allRows as $allRow) {
@@ -129,7 +148,7 @@ foreach ($nightlyCompanies as $nightlyCompany) {
 $allElapsedMs = (int) round((microtime(true) - $allStartedAt) * 1000);
 $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
 
-echo json_encode([
+$body = (string) json_encode([
     'success' => $failed === [] && $allFailed === [],
     'job' => 'nightly',
     'window_seconds' => SANCUS_NIGHTLY_SEARCH_MAX_AGE,
@@ -150,7 +169,6 @@ echo json_encode([
     ],
     'recorded_at' => date('c'),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-$body = (string) ob_get_clean();
 @file_put_contents($resultPath . '.tmp', json_encode(['status' => http_response_code() ?: 200, 'body' => $body]));
 @rename($resultPath . '.tmp', $resultPath);
 echo $body;
