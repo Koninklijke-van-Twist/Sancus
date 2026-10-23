@@ -124,9 +124,14 @@ test_assert('nl-getal parsen', xlsx_parse_number('€ -1.234,50') === -1234.5 &&
 $web = dirname(__DIR__) . '/web/';
 $export = (string) file_get_contents($web . 'export.php');
 test_assert('export via logincheck', str_contains($export, "require_once __DIR__ . '/logincheck.php'"));
-foreach (['index.php' => 'sancus-posten-table', 'salesperson.php' => 'sancus-contract-list', 'customer.php' => 'sancus-customer-contracts'] as $page => $table) {
+foreach (['index.php' => 'sancus-posten-table'] as $page => $table) {
     $src = (string) file_get_contents($web . $page);
     test_assert("Excel-knop op {$page}", str_contains($src, "portal_xlsx_button('{$table}')") && str_contains($src, 'portal_render_xlsx_script()'));
+}
+// lijstpagina's zijn gepagineerd: Excel wordt server-side gebouwd met álle rijen
+foreach (['salesperson.php', 'customer.php'] as $page) {
+    $src = (string) file_get_contents($web . $page);
+    test_assert("server-side Excel op {$page}", str_contains($src, "'export' => 'xlsx'") && str_contains($src, 'xlsx_build(') && str_contains($src, 'portal_render_pagination('));
 }
 $loc = (string) file_get_contents($web . 'localization.php');
 test_assert('vertaling Excel in 4 talen', substr_count($loc, "'sancus.btn.excel'") === 4 && substr_count($loc, "'sancus.export.filters'") === 4);

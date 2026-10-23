@@ -161,7 +161,7 @@ test_assert('verkooppost zonder Line_Amount_LCY telt mee als gefactureerd', abs(
 $saleLcy = project_normalize_posten_row(['Entry_Type' => 'Sale', 'Line_Amount_LCY' => -100.0, 'Line_Amount' => -90.0]);
 test_assert('Line_Amount_LCY wint als het er wel is', abs($saleLcy['revenue'] - 100.0) < 0.001);
 test_assert('posten-select vraagt Line_Amount op', str_contains(SANCUS_POSTEN_SELECT, ',Line_Amount\'') || str_ends_with(SANCUS_POSTEN_SELECT, ',Line_Amount'));
-test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v4' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
+test_assert('cacheversie lijsttotalen gebumpt', SANCUS_LIST_SUMMARY_CACHE_VERSION === 'v5' && str_contains(project_list_summary_cache_path('X', 'CT1', false), '/list_summary/'));
 
 // Contractscope (Ariadne): alleen KVT_Contract_No-projecten; plus posten met eigen LVS_Contract_No
 [$scopeP, $scopeW] = project_contract_scope('CT26000009', [['no' => 'PRJ1', 'contract_no' => 'CT26000009'], ['no' => 'PRJ2605125', 'contract_no' => '']], [['no' => 'WO1', 'job_no' => 'PRJ1'], ['no' => 'WO2605781', 'job_no' => 'PRJ2605125'], ['no' => 'WO0', 'job_no' => '']]);

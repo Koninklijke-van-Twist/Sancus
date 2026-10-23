@@ -133,18 +133,80 @@ if ($debtorName !== '') {
     $groupLabel = LOC('sancus.customer.group', $debtorCode);
 }
 
-$refreshParams = [
+// Paginering: max SANCUS_LIST_PAGE_SIZE contracten per pagina, groepen blijven zichtbaar
+$flatContracts = [];
+foreach ($groups as $groupIndex => $group) {
+    foreach ((is_array($group['contracts'] ?? null) ? $group['contracts'] : []) as $contract) {
+        $flatContracts[] = ['group' => $groupIndex, 'contract' => $contract];
+    }
+}
+$pagination = project_paginate_rows($flatContracts, max(1, (int) ($_GET['page'] ?? 1)));
+$pageGroups = [];
+foreach ($pagination['rows'] as $item) {
+    $groupIndex = $item['group'];
+    if (!isset($pageGroups[$groupIndex])) {
+        $pageGroups[$groupIndex] = $groups[$groupIndex];
+        $pageGroups[$groupIndex]['contracts'] = [];
+    }
+    $pageGroups[$groupIndex]['contracts'][] = $item['contract'];
+}
+$listBaseParams = [
     'company' => $company,
     'customer' => $resolvedNo,
-    'refresh' => '1',
+    'date_from' => $dateFrom !== '' ? $dateFrom : null,
     'lang' => getCurrentLanguage(),
 ];
-if ($dateFrom !== '') {
-    $refreshParams['date_from'] = $dateFrom;
+$pageUrl = static function (int $page) use ($listBaseParams): string {
+    return 'customer.php?' . http_build_query($listBaseParams + ['page' => $page > 1 ? $page : null]);
+};
+$exportUrl = 'customer.php?' . http_build_query($listBaseParams + ['export' => 'xlsx']);
+
+if (strtolower(trim((string) ($_GET['export'] ?? ''))) === 'xlsx' && is_array($result) && !empty($result['found'])) {
+    // Excel: alle contracten van de klant(groep), niet alleen de huidige pagina
+    require_once __DIR__ . '/xlsx_writer.php';
+    $xlsxRows = [];
+    foreach ($flatContracts as $item) {
+        $group = $groups[$item['group']];
+        $groupName = trim((string) ($group['customer_name'] ?? ''));
+        $groupNo = trim((string) ($group['customer_no'] ?? ''));
+        $contract = $item['contract'];
+        $xlsxRows[] = [
+            $groupName !== '' ? $groupName : $groupNo,
+            $groupNo,
+            (string) ($contract['contract_no'] ?? ''),
+            (string) ($contract['description'] ?? ''),
+            (string) ($contract['status'] ?? ''),
+            ['v' => substr((string) ($contract['starting_date'] ?? ''), 0, 10), 't' => 'date'],
+        ];
+    }
+    $binary = xlsx_build($pageTitle, [
+        ['label' => LOC('sancus.meta.customer'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.customer_no'), 'type' => 'text'],
+        ['label' => LOC('sancus.meta.contract'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.description'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.status'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.starting_date'), 'type' => 'date'],
+    ], $xlsxRows, [
+        [LOC('sancus.label.company'), $company],
+        [LOC('sancus.label.customer'), $searchFieldValue],
+        [LOC('sancus.label.date_from'), $dateFrom],
+    ], LOC('sancus.export.filters'));
+    $fileName = trim((string) preg_replace('/[^A-Za-z0-9._-]+/', '_', $pageTitle), '_');
+    $fileName = ($fileName !== '' ? $fileName : 'sancus') . '_' . date('Ymd') . '.xlsx';
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Content-Length: ' . strlen($binary));
+    header('Cache-Control: no-store');
+    echo $binary;
+    exit;
 }
-$refreshUrl = 'customer.php?' . http_build_query($refreshParams);
+
+$refreshUrl = 'customer.php?' . http_build_query($listBaseParams + [
+    'page' => $pagination['page'] > 1 ? $pagination['page'] : null,
+    'refresh' => '1',
+]);
 $dataAgeLabel = $dataCachedAt !== null
-    ? LOC('sancus.data_age', project_format_data_age((int) $dataCachedAt))
+    ? LOC('sancus.list.data_from', date('d-m-Y H:i', (int) $dataCachedAt))
     : '';
 
 ?><!DOCTYPE html>
@@ -187,6 +249,8 @@ $dataAgeLabel = $dataCachedAt !== null
         table.sancus-table th, table.sancus-table td { border-bottom: 1px solid var(--kvt-line); padding: 10px 8px; text-align: left; vertical-align: top; }
         table.sancus-table th { color: var(--kvt-muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
         table.sancus-table td.sancus-nowrap { white-space: nowrap; }
+        .sancus-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 12px; }
+        .sancus-pagination .sancus-btn { padding: 6px 12px; }
         table.sancus-table .group-cell-name { display: block; margin-top: 2px; font-size: 0.82em; font-weight: 400; color: var(--kvt-muted); }
         tr.sancus-customer-sep td { background: #f8fafc; font-weight: 700; color: var(--kvt-text); }
         tr.sancus-click-row { cursor: pointer; }
@@ -299,15 +363,19 @@ $dataAgeLabel = $dataCachedAt !== null
                     <?php endif; ?>
                     <a class="sancus-data-age-refresh contract-nav"
                         href="<?= portal_h($refreshUrl) ?>"
-                        title="<?= portal_h(LOC('sancus.btn.refresh')) ?>"
-                        aria-label="<?= portal_h(LOC('sancus.btn.refresh')) ?>">↻</a>
+                        title="<?= portal_h(LOC('sancus.btn.refresh')) ?>">↻ <?= portal_h(LOC('sancus.btn.refresh_short')) ?></a>
                 </div>
             </div>
 
             <?php if ($groups === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.customer.empty')) ?></p>
             <?php else: ?>
-                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-customer-contracts') ?></div>
+                <div class="sancus-table-toolbar">
+                    <a class="sancus-btn sancus-btn-excel" href="<?= portal_h($exportUrl) ?>"
+                        style="background:#1d6f42;border-color:#1d6f42;color:#fff;margin:0 8px 8px 0;"
+                        title="<?= portal_h(LOC('sancus.export.title')) ?>"><?= portal_h(LOC('sancus.btn.excel')) ?></a>
+                </div>
+                <?php portal_render_pagination($pagination, $pageUrl); ?>
                 <div class="sancus-table-wrap">
                     <table class="sancus-table" id="sancus-customer-contracts" data-xlsx-title="<?= portal_h($pageTitle) ?>">
                         <thead>
@@ -319,7 +387,7 @@ $dataAgeLabel = $dataCachedAt !== null
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($groups as $group): ?>
+                            <?php foreach ($pageGroups as $group): ?>
                                 <?php
                                     $groupNo = trim((string) ($group['customer_no'] ?? ''));
                                     $groupName = trim((string) ($group['customer_name'] ?? ''));
@@ -356,6 +424,7 @@ $dataAgeLabel = $dataCachedAt !== null
                         </tbody>
                     </table>
                 </div>
+                <?php portal_render_pagination($pagination, $pageUrl); ?>
             <?php endif; ?>
         </section>
     <?php endif; ?>
