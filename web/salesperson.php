@@ -562,7 +562,7 @@ $dataAgeLabel = $dataCachedAt !== null
             <?php if ($rows === []): ?>
                 <p class="sancus-muted"><?= portal_h(LOC('sancus.salesperson.empty')) ?></p>
             <?php else: ?>
-                <div id="sancus-contract-list-wrap">" data-page-total="<?= count($rows) ?>"<?= $allPreloaded ? '' : ' hidden' ?>>
+                <div id="sancus-contract-list-wrap" data-page-total="<?= count($rows) ?>">
                 <div class="sancus-table-toolbar">
                     <a class="sancus-btn sancus-btn-excel" href="<?= portal_h($exportUrl) ?>"
                         style="background:#1d6f42;border-color:#1d6f42;color:#fff;margin:0 8px 8px 0;"
