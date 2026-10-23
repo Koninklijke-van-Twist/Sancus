@@ -434,3 +434,27 @@ function portal_render_xlsx_script(): void
 </script>
     <?php
 }
+
+/**
+ * Paginering onder/boven de lijst (max SANCUS_LIST_PAGE_SIZE per pagina).
+ *
+ * @param array{page:int,pages:int,total:int,offset:int,rows:list<mixed>} $pagination
+ */
+function portal_render_pagination(array $pagination, callable $pageUrl): void
+{
+    $page = (int) $pagination['page'];
+    $pages = (int) $pagination['pages'];
+    $from = $pagination['total'] > 0 ? (int) $pagination['offset'] + 1 : 0;
+    $to = (int) $pagination['offset'] + count($pagination['rows']);
+    echo '<nav class="sancus-pagination" aria-label="' . portal_h(LOC('sancus.list.pagination')) . '">';
+    if ($page > 1) {
+        echo '<a class="sancus-btn sancus-btn-secondary contract-nav" href="' . portal_h($pageUrl(1)) . '">«</a>';
+        echo '<a class="sancus-btn sancus-btn-secondary contract-nav" href="' . portal_h($pageUrl($page - 1)) . '">‹ ' . portal_h(LOC('sancus.list.prev')) . '</a>';
+    }
+    echo '<span class="sancus-muted">' . portal_h(LOC('sancus.list.page_info', $page, $pages, $from, $to, (int) $pagination['total'])) . '</span>';
+    if ($page < $pages) {
+        echo '<a class="sancus-btn sancus-btn-secondary contract-nav" href="' . portal_h($pageUrl($page + 1)) . '">' . portal_h(LOC('sancus.list.next')) . ' ›</a>';
+        echo '<a class="sancus-btn sancus-btn-secondary contract-nav" href="' . portal_h($pageUrl($pages)) . '">»</a>';
+    }
+    echo '</nav>';
+}

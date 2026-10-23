@@ -102,6 +102,61 @@ function salesperson_customer_cell(array $row): string
 }
 
 /**
+ * Excel van álle lijstrijen (zelfde kolommen als de tabel).
+ *
+ * @param list<array<string,mixed>> $rows
+ * @param list<array{0:string,1:string}> $filters
+ */
+function salesperson_build_xlsx(string $title, array $rows, bool $withSalesperson, array $filters): string
+{
+    $columns = [
+        ['label' => LOC('sancus.meta.contract'), 'type' => 'text'],
+        ['label' => LOC('sancus.meta.customer'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.customer_no'), 'type' => 'text'],
+    ];
+    if ($withSalesperson) {
+        $columns[] = ['label' => LOC('sancus.label.salesperson'), 'type' => 'text'];
+    }
+    foreach ([
+        ['sancus.col.projects_count', 'int'], ['sancus.meta.cost', 'money'], ['sancus.meta.revenue', 'money'],
+        ['sancus.meta.profit', 'money'], ['sancus.meta.profit_pct', 'percent'], ['sancus.meta.material', 'money'],
+        ['sancus.meta.hours', 'money'], ['sancus.meta.kilometers', 'money'], ['sancus.col.closed_pct', 'percent'],
+    ] as [$key, $type]) {
+        $columns[] = ['label' => LOC($key), 'type' => $type];
+    }
+    $out = [];
+    foreach ($rows as $row) {
+        $customerName = trim((string) ($row['customer_name'] ?? ''));
+        $customerNo = trim((string) ($row['customer_no'] ?? ''));
+        $line = [(string) ($row['contract_no'] ?? ''), $customerName !== '' ? $customerName : $customerNo, $customerNo];
+        if ($withSalesperson) {
+            $line[] = salesperson_person_label(is_array($row['salesperson'] ?? null) ? $row['salesperson'] : []);
+        }
+        $m = is_array($row['metrics'] ?? null) ? $row['metrics'] : null;
+        if ($m === null) {
+            $line[] = ['v' => LOC('sancus.salesperson.incomplete'), 't' => 'text'];
+        } else {
+            $closedTotal = (int) ($m['closed_total'] ?? 0);
+            array_push(
+                $line,
+                (int) ($m['project_count'] ?? 0),
+                (float) $m['cost'],
+                (float) $m['revenue'],
+                (float) $m['profit'],
+                $m['profit_pct'] === null ? '' : (float) $m['profit_pct'] / 100,
+                (float) $m['material_money'],
+                (float) $m['hours_money'],
+                (float) $m['kilometers_money'],
+                $closedTotal > 0 ? (int) $m['closed'] / $closedTotal : 0
+            );
+        }
+        $out[] = $line;
+    }
+
+    return xlsx_build($title !== '' ? $title : 'Sancus', $columns, $out, $filters, LOC('sancus.export.filters'));
+}
+
+/**
  * Page load
  */
 
@@ -252,11 +307,46 @@ $dateTo = portal_parse_date_param((string) ($_GET['date_to'] ?? ''));
 [$dateFrom, $dateTo] = project_normalize_date_range($dateFrom, $dateTo);
 $closedFilter = project_normalize_closed_filter((string) ($_GET['closed'] ?? ''));
 $forceRefresh = in_array(strtolower(trim((string) ($_GET['refresh'] ?? ''))), ['1', 'true', 'yes'], true);
+$listPage = max(1, (int) ($_GET['page'] ?? 1));
+$exportXlsx = strtolower(trim((string) ($_GET['export'] ?? ''))) === 'xlsx';
+// Alle zoekvelden bewust leeg: alle contracten uit de nightly-cache (alleen live zonder cache of bij Vernieuwen)
+$allMode = $salespersonCode === '' && $customerParam === '' && $contractQuery === ''
+    && in_array(strtolower(trim((string) ($_GET['all'] ?? ''))), ['1', 'true', 'yes'], true);
 $errorKey = '';
 $result = null;
 $dataCachedAt = null;
 
-if ($salespersonCode !== '' || $customerParam !== '' || $contractQuery !== '') {
+if ($allMode) {
+    try {
+        auth_set_current_company_context($company);
+        $allCache = $forceRefresh ? null : project_all_contracts_cache_read($company, $includeUnbookedCosts);
+        if ($allCache === null) {
+            // Geen (geldige) cache of expliciet Vernieuwen: live ophalen en de cache herschrijven
+            @set_time_limit(0);
+            @ignore_user_abort(true);
+            project_set_force_refresh($forceRefresh);
+            try {
+                $generatedAt = time();
+                $allRows = project_build_all_contract_rows($company, SANCUS_NIGHTLY_CACHE_TTL, $includeUnbookedCosts);
+            } finally {
+                project_set_force_refresh(false);
+            }
+            project_all_contracts_cache_write($company, $includeUnbookedCosts, $allRows, $generatedAt);
+            $allCache = ['generated_at' => $generatedAt, 'rows' => $allRows];
+        }
+        $dataCachedAt = (int) $allCache['generated_at'];
+        $result = [
+            'found' => true,
+            'salesperson' => null,
+            'customer' => null,
+            'rows' => project_filter_list_rows($allCache['rows'], $dateFrom, $dateTo, $closedFilter),
+        ];
+    } catch (Throwable $loadError) {
+        error_log('[Sancus] alle contracten mislukt: ' . substr($loadError->getMessage(), 0, 500) . ' in ' . $loadError->getFile() . ':' . $loadError->getLine());
+        $errorKey = 'sancus.error.load_failed';
+        $result = null;
+    }
+} elseif ($salespersonCode !== '' || $customerParam !== '' || $contractQuery !== '') {
     @set_time_limit(120);
     try {
         auth_set_current_company_context($company);
@@ -285,6 +375,24 @@ if ($salespersonCode !== '' || $customerParam !== '' || $contractQuery !== '') {
         }
         $cachedAt = project_get_data_cached_at();
         $dataCachedAt = $cachedAt !== null ? $cachedAt : time();
+        if (is_array($result['rows'] ?? null) && $result['rows'] !== []) {
+            // Totalen uit de (nightly-)cache; het afgesloten-filter en de Excel-export hebben
+            // alle rijen nodig, dus dan ontbrekende totalen meteen (gebundeld) ophalen.
+            $fetchMissing = $closedFilter !== 'all' || $exportXlsx;
+            project_set_force_refresh($forceRefresh);
+            try {
+                $withMetrics = project_list_rows_with_cached_metrics($company, $result['rows'], $includeUnbookedCosts, $fetchMissing);
+            } finally {
+                project_set_force_refresh(false);
+            }
+            $result['rows'] = $withMetrics['rows'];
+            if ($closedFilter !== 'all') {
+                $result['rows'] = project_filter_list_rows($result['rows'], '', '', $closedFilter);
+            }
+            if ($withMetrics['oldest'] !== null) {
+                $dataCachedAt = $withMetrics['oldest'];
+            }
+        }
         if (empty($result['found'])) {
             $errorKey = 'sancus.salesperson.not_found';
         }
@@ -304,7 +412,9 @@ $resolvedCode = is_array($result['salesperson'] ?? null) ? trim((string) ($resul
 if ($resolvedCode === '') {
     $resolvedCode = $salespersonCode;
 }
-$rows = is_array($result['rows'] ?? null) ? $result['rows'] : [];
+$allRowsForList = is_array($result['rows'] ?? null) ? $result['rows'] : [];
+$pagination = project_paginate_rows($allRowsForList, $listPage);
+$rows = $pagination['rows'];
 $searchFieldValue = $salespersonName !== '' ? $salespersonName : $salespersonCode;
 $customerLabel = is_array($result['customer'] ?? null) ? trim((string) ($result['customer']['name'] ?? '')) : '';
 $titleParts = [];
@@ -317,24 +427,54 @@ if ($customerParam !== '') {
 if ($contractQuery !== '') {
     $titleParts[] = $contractQuery;
 }
-// Zoeken op klant: extra kolom Verkoper. De kolom Klant staat er altijd (dus ook bij zoeken op verkoper).
-$showSalespersonColumn = $customerParam !== '';
-$pageTitle = $titleParts !== [] ? implode(' · ', $titleParts) : LOC('sancus.salesperson.title');
+// Zoeken op klant of alle contracten: extra kolom Verkoper. De kolom Klant staat er altijd.
+$showSalespersonColumn = $customerParam !== '' || $allMode;
+$pageTitle = $titleParts !== [] ? implode(' · ', $titleParts) : ($allMode ? LOC('sancus.list.all_title') : LOC('sancus.salesperson.title'));
 
-$refreshParams = [
+$listBaseParams = [
     'company' => $company,
+    'all' => $allMode ? '1' : null,
     'salesperson' => $resolvedCode !== '' ? $resolvedCode : null,
     'customer' => $customerParam !== '' ? $customerParam : null,
     'contract' => $contractQuery !== '' ? $contractQuery : null,
     'date_from' => $dateFrom !== '' ? $dateFrom : null,
     'date_to' => $dateTo !== '' ? $dateTo : null,
     'closed' => $closedFilter !== 'all' ? $closedFilter : null,
-    'refresh' => '1',
     'lang' => getCurrentLanguage(),
 ];
-$refreshUrl = 'salesperson.php?' . http_build_query($refreshParams);
+$pageUrl = static function (int $page) use ($listBaseParams): string {
+    return 'salesperson.php?' . http_build_query($listBaseParams + ['page' => $page > 1 ? $page : null]);
+};
+$exportUrl = 'salesperson.php?' . http_build_query($listBaseParams + ['export' => 'xlsx']);
+
+if ($exportXlsx && is_array($result) && !empty($result['found'])) {
+    // Excel: alle rijen die aan de filters voldoen, niet alleen de huidige pagina
+    require_once __DIR__ . '/xlsx_writer.php';
+    $binary = salesperson_build_xlsx($pageTitle, $allRowsForList, $showSalespersonColumn, [
+        [LOC('sancus.label.company'), $company],
+        [LOC('sancus.label.contract'), $contractQuery],
+        [LOC('sancus.label.salesperson'), $searchFieldValue],
+        [LOC('sancus.label.customer'), $customerParam],
+        [LOC('sancus.label.date_from'), $dateFrom],
+        [LOC('sancus.label.date_to'), $dateTo],
+        [LOC('sancus.label.closed_filter'), LOC('sancus.closed_filter.' . $closedFilter)],
+    ]);
+    $fileName = trim((string) preg_replace('/[^A-Za-z0-9._-]+/', '_', $pageTitle), '_');
+    $fileName = ($fileName !== '' ? $fileName : 'sancus') . '_' . date('Ymd') . '.xlsx';
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Content-Length: ' . strlen($binary));
+    header('Cache-Control: no-store');
+    echo $binary;
+    exit;
+}
+
+$refreshUrl = 'salesperson.php?' . http_build_query($listBaseParams + [
+    'page' => $pagination['page'] > 1 ? $pagination['page'] : null,
+    'refresh' => '1',
+]);
 $dataAgeLabel = $dataCachedAt !== null
-    ? LOC('sancus.data_age', project_format_data_age((int) $dataCachedAt))
+    ? LOC('sancus.list.data_from', date('d-m-Y H:i', (int) $dataCachedAt))
     : '';
 
 ?><!DOCTYPE html>
@@ -384,6 +524,8 @@ $dataAgeLabel = $dataCachedAt !== null
         table.sancus-table td.amount-revenue { color: #15803d; font-weight: 700; }
         table.sancus-table td.amount-zero { color: #9ca3af; font-weight: 400; }
         table.sancus-table .group-cell-name { display: block; margin-top: 2px; font-size: 0.82em; font-weight: 400; color: var(--kvt-muted); }
+        .sancus-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 12px; }
+        .sancus-pagination .sancus-btn { padding: 6px 12px; }
         .sancus-list-progress[hidden] { display: none !important; }
         .sancus-list-progress { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
         tr.sancus-click-row { cursor: pointer; }
@@ -497,8 +639,7 @@ $dataAgeLabel = $dataCachedAt !== null
                     <?php endif; ?>
                     <a class="sancus-data-age-refresh contract-nav"
                         href="<?= portal_h($refreshUrl) ?>"
-                        title="<?= portal_h(LOC('sancus.btn.refresh')) ?>"
-                        aria-label="<?= portal_h(LOC('sancus.btn.refresh')) ?>">↻</a>
+                        title="<?= portal_h(LOC('sancus.btn.refresh')) ?>">↻ <?= portal_h(LOC('sancus.btn.refresh_short')) ?></a>
                 </div>
             </div>
 
@@ -510,7 +651,12 @@ $dataAgeLabel = $dataCachedAt !== null
                     <p id="sancus-summary-status"><?= portal_h(sprintf(LOC('sancus.salesperson.loading_progress'), 0, count($rows))) ?></p>
                 </div>
                 <div id="sancus-contract-list-wrap" hidden>
-                <div class="sancus-table-toolbar"><?= portal_xlsx_button('sancus-contract-list') ?></div>
+                <div class="sancus-table-toolbar">
+                    <a class="sancus-btn sancus-btn-excel" href="<?= portal_h($exportUrl) ?>"
+                        style="background:#1d6f42;border-color:#1d6f42;color:#fff;margin:0 8px 8px 0;"
+                        title="<?= portal_h(LOC('sancus.export.title')) ?>"><?= portal_h(LOC('sancus.btn.excel')) ?></a>
+                </div>
+                <?php portal_render_pagination($pagination, $pageUrl); ?>
                 <div class="sancus-table-wrap">
                                         <table class="sancus-table" id="sancus-contract-list" data-xlsx-title="<?= portal_h($pageTitle) ?>"
                         data-company="<?= portal_h($company) ?>"
@@ -566,6 +712,7 @@ $dataAgeLabel = $dataCachedAt !== null
                         </tbody>
                     </table>
                 </div>
+                <?php portal_render_pagination($pagination, $pageUrl); ?>
                 </div>
             <?php endif; ?>
         </section>

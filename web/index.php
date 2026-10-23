@@ -445,9 +445,19 @@ try {
         $asyncLoad = true;
         $contractNo = $searchQuery;
         $view = 'loading';
-    } elseif ($dateFrom !== '' || $dateTo !== '' || $closedFilter !== 'all') {
-        // Alleen een datum zou alle contracten laden: vraag om minstens één zoekveld
-        $errorKey = 'sancus.error.need_search_field';
+    } elseif (array_key_exists('contract', $_GET) || array_key_exists('salesperson', $_GET) || array_key_exists('customer', $_GET)) {
+        // Zoeken met contract, verkoper én klant bewust leeg: alle contracten (gepagineerd, uit de nightly-cache)
+        $allParams = [
+            'company' => $company,
+            'all' => '1',
+            'date_from' => $dateFrom !== '' ? $dateFrom : null,
+            'date_to' => $dateTo !== '' ? $dateTo : null,
+            'closed' => $closedFilter !== 'all' ? $closedFilter : null,
+            'refresh' => $forceRefresh ? '1' : null,
+            'lang' => getCurrentLanguage(),
+        ];
+        header('Location: salesperson.php?' . http_build_query($allParams), true, 302);
+        exit;
     }
 } catch (Throwable $loadError) {
     $pageLoadMessage = $loadError->getMessage();

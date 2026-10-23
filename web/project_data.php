@@ -12,7 +12,8 @@ require_once __DIR__ . '/odata.php';
  */
 // v2: Verkoop-posten tellen mee (Line_Amount); oude lijsttotalen vervallen
 // v3: contractscope via KVT_Contract_No + LVS_Contract_No-posten; v4: totaal materiaal/uren/km = kosten (positief)
-const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v4';
+// v5: alle-contracten-bestand (nightly) + rij bevat starting_date/salesperson voor lijstfilters
+const SANCUS_LIST_SUMMARY_CACHE_VERSION = 'v5';
 const SANCUS_POSTEN_SELECT = 'Entry_No,Job_No,Entry_Type,Type,No,Work_Type_Code,Description,Posting_Date,Document_No,Quantity,LVS_Main_Entity,LVS_Main_Entity_Description,LVS_Component_No,LVS_Component_Description,LVS_Work_Order_No,Total_Cost_LCY,Line_Amount_LCY,Line_Amount';
 const SANCUS_PROJECT_SELECT = 'No,KVT_Contract_No,Status,Bill_to_Customer_No,LVS_Bill_to_Name';
 const SANCUS_PLANNING_SELECT = 'Line_No,Main_Entity,Main_Entity_Description,Invoice_Amount,Planned_Invoice_Date,Posted_Invoice_No,Posted_Credit_Memo_No';
@@ -45,6 +46,10 @@ const SANCUS_CONTRACT_BATCH_CHUNK = 40;
 const SANCUS_BATCH_WAVE = 4;
 // Contractlijst: aantal contracten per totalen-verzoek uit de browser
 const SANCUS_LIST_SUMMARY_GROUP = 40;
+// Lijstweergaven: maximaal aantal contracten per pagina
+const SANCUS_LIST_PAGE_SIZE = 200;
+// Nightly: Mímir max_age (beleid: 4 uur), los van de cache-TTL tot de volgende nightly
+const SANCUS_NIGHTLY_MIMIR_MAX_AGE = 14400;
 
 /**
  * Functies
@@ -5379,3 +5384,219 @@ function project_list_summary_cache_put(string $company, array $row, bool $inclu
     }
     @file_put_contents($path, json_encode($row, JSON_UNESCAPED_UNICODE), LOCK_EX);
 }
+
+/**
+ * Alle-contracten-cache (web/data/list_summary): één bestand per bedrijf en voorkeur
+ * ongeboekte kosten, gevuld door nightly.php of door 'Vernieuwen' op het overzicht.
+ */
+function project_all_contracts_cache_path(string $company, bool $includeUnbookedCosts): string
+{
+    return __DIR__ . '/data/list_summary/all_' . sha1(SANCUS_LIST_SUMMARY_CACHE_VERSION . "\nall\n" . $company . "\n" . ($includeUnbookedCosts ? '1' : '0')) . '.json';
+}
+
+/**
+ * @return array{generated_at:int,rows:list<array<string,mixed>>}|null
+ */
+function project_all_contracts_cache_read(string $company, bool $includeUnbookedCosts, int $ttl = SANCUS_NIGHTLY_CACHE_TTL): ?array
+{
+    $path = project_all_contracts_cache_path($company, $includeUnbookedCosts);
+    if (!is_file($path)) {
+        return null;
+    }
+    $data = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($data) || !is_array($data['rows'] ?? null)) {
+        return null;
+    }
+    $generatedAt = (int) ($data['generated_at'] ?? 0);
+    if ($generatedAt <= 0 || (time() - $generatedAt) > $ttl) {
+        return null;
+    }
+
+    return ['generated_at' => $generatedAt, 'rows' => array_values($data['rows'])];
+}
+
+/**
+ * @param list<array<string,mixed>> $rows
+ */
+function project_all_contracts_cache_write(string $company, bool $includeUnbookedCosts, array $rows, ?int $generatedAt = null): void
+{
+    $path = project_all_contracts_cache_path($company, $includeUnbookedCosts);
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    $json = json_encode([
+        'version' => SANCUS_LIST_SUMMARY_CACHE_VERSION,
+        'company' => $company,
+        'generated_at' => $generatedAt ?? time(),
+        'rows' => array_values($rows),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        return;
+    }
+    // Atomair vervangen: lezers zien nooit een half bestand
+    $tmp = $path . '.' . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, $json, LOCK_EX) !== false) {
+        @rename($tmp, $path);
+    } else {
+        @unlink($tmp);
+    }
+}
+
+/**
+ * Alle contractkoppen van een bedrijf (AppMaintenanceContracts, zonder filter).
+ *
+ * @return list<array<string,string>>
+ */
+function project_fetch_all_contract_headers(string $company, int $ttl = 3600): array
+{
+    $rows = project_fetch_rows($company, 'AppMaintenanceContracts', [
+        '$select' => SANCUS_CUSTOMER_CONTRACT_HEADER_SELECT,
+    ], $ttl);
+
+    return project_contract_headers_from_rows($rows);
+}
+
+/**
+ * Bouwt de totalen van álle contracten: bundels van SANCUS_LIST_SUMMARY_GROUP (40),
+ * per bundel Mímir-golven van SANCUS_BATCH_WAVE (4) tegelijk. Schrijft ook de
+ * per-contract-cache, zodat zoeken op verkoper/klant direct uit cache komt.
+ *
+ * @return list<array<string,mixed>>
+ */
+function project_build_all_contract_rows(string $company, int $ttl, bool $includeUnbookedCosts, ?callable $onChunk = null): array
+{
+    $headers = project_fetch_all_contract_headers($company, $ttl);
+    $contracts = [];
+    foreach ($headers as $header) {
+        $contracts[] = [
+            'contract_no' => (string) $header['contract_no'],
+            'customer_no' => (string) ($header['customer_no'] ?? ''),
+            'customer_name' => (string) ($header['customer_name'] ?? ''),
+            'contract_value' => null,
+            'starting_date' => (string) ($header['starting_date'] ?? ''),
+        ];
+    }
+    usort($contracts, static function (array $a, array $b): int {
+        return strnatcasecmp((string) $b['contract_no'], (string) $a['contract_no']);
+    });
+    $out = [];
+    $total = count($contracts);
+    foreach (array_chunk($contracts, max(1, SANCUS_LIST_SUMMARY_GROUP)) as $chunk) {
+        @set_time_limit(600);
+        try {
+            $batchRows = project_contract_summary_rows_batched($company, $chunk, $ttl, $includeUnbookedCosts);
+        } catch (Throwable $error) {
+            error_log('[Sancus] alle contracten: bundel mislukt: ' . substr($error->getMessage(), 0, 500));
+            $batchRows = [];
+            foreach ($chunk as $contract) {
+                $batchRows[] = $contract + ['metrics' => null, 'load_error' => true, 'salesperson' => ['code' => '', 'name' => '']];
+            }
+        }
+        foreach ($batchRows as $row) {
+            project_list_summary_cache_put($company, $row, $includeUnbookedCosts);
+            $out[] = $row;
+        }
+        if ($onChunk !== null) {
+            $onChunk(count($out), $total);
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Datum van/tot (startdatum) en het afgesloten-filter op lijstrijen met totalen.
+ *
+ * @param list<array<string,mixed>> $rows
+ * @return list<array<string,mixed>>
+ */
+function project_filter_list_rows(array $rows, string $dateFrom, string $dateTo, string $closedFilter): array
+{
+    $closedFilter = project_normalize_closed_filter($closedFilter);
+
+    return array_values(array_filter($rows, static function (array $row) use ($dateFrom, $dateTo, $closedFilter): bool {
+        if (($dateFrom !== '' || $dateTo !== '')
+            && !project_contract_start_in_range((string) ($row['starting_date'] ?? ''), $dateFrom, $dateTo)) {
+            return false;
+        }
+
+        return $closedFilter === 'all' || project_row_matches_closed_filter($row, $closedFilter);
+    }));
+}
+
+/**
+ * Pagineert een lijst (max SANCUS_LIST_PAGE_SIZE per pagina).
+ *
+ * @template T
+ * @param list<T> $rows
+ * @return array{rows:list<T>,page:int,pages:int,total:int,offset:int}
+ */
+function project_paginate_rows(array $rows, int $page, int $pageSize = SANCUS_LIST_PAGE_SIZE): array
+{
+    $pageSize = max(1, $pageSize);
+    $total = count($rows);
+    $pages = max(1, (int) ceil($total / $pageSize));
+    $page = min(max(1, $page), $pages);
+    $offset = ($page - 1) * $pageSize;
+
+    return [
+        'rows' => array_slice(array_values($rows), $offset, $pageSize),
+        'page' => $page,
+        'pages' => $pages,
+        'total' => $total,
+        'offset' => $offset,
+    ];
+}
+
+/**
+ * Vult lijstrijen aan met totalen uit de per-contract-cache; ontbrekende rijen
+ * worden (als $fetchMissing) live gebundeld opgehaald en gecachet.
+ *
+ * @param list<array<string,mixed>> $rows
+ * @return array{rows:list<array<string,mixed>>,oldest:?int}
+ */
+function project_list_rows_with_cached_metrics(string $company, array $rows, bool $includeUnbookedCosts, bool $fetchMissing, int $ttl = SANCUS_NIGHTLY_CACHE_TTL): array
+{
+    $oldest = null;
+    $missing = [];
+    foreach ($rows as $index => $row) {
+        project_reset_data_cached_at();
+        $cached = project_list_summary_cache_get($company, (string) ($row['contract_no'] ?? ''), $includeUnbookedCosts, $ttl);
+        if ($cached === null) {
+            $missing[$index] = $row;
+            continue;
+        }
+        $at = project_get_data_cached_at();
+        if ($at !== null) {
+            $oldest = $oldest === null ? $at : min($oldest, $at);
+        }
+        foreach (['starting_date', 'customer_no', 'customer_name'] as $field) {
+            if (trim((string) ($cached[$field] ?? '')) === '' && trim((string) ($row[$field] ?? '')) !== '') {
+                $cached[$field] = $row[$field];
+            }
+        }
+        $rows[$index] = $cached;
+    }
+    if ($fetchMissing && $missing !== []) {
+        foreach (array_chunk($missing, max(1, SANCUS_LIST_SUMMARY_GROUP), true) as $chunk) {
+            @set_time_limit(180);
+            $batchRows = project_contract_summary_rows_batched($company, array_values($chunk), $ttl, $includeUnbookedCosts);
+            $byKey = [];
+            foreach ($batchRows as $batchRow) {
+                project_list_summary_cache_put($company, $batchRow, $includeUnbookedCosts);
+                $byKey[project_normalize_match_text((string) $batchRow['contract_no'])] = $batchRow;
+            }
+            foreach ($chunk as $index => $row) {
+                $key = project_normalize_match_text((string) ($row['contract_no'] ?? ''));
+                if (isset($byKey[$key])) {
+                    $rows[$index] = $byKey[$key];
+                }
+            }
+        }
+        $oldest = $oldest ?? time();
+    }
+
+    return ['rows' => array_values($rows), 'oldest' => $oldest];
+}
+
