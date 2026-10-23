@@ -12,8 +12,10 @@ require_once __DIR__ . '/kvt_protect_dirs.php';
  * uit cache serveert. Mímir max_age = SANCUS_NIGHTLY_MIMIR_MAX_AGE (4 uur);
  * bundels van 40 contracten, max 4 Mímir-calls tegelijk.
  *
- * Aanroepen: CLI `php web/nightly.php` (aanbevolen), of HTTP GET met header
- * X-Sancus-Secret (runner-geheim uit auth.php / SANCUS_RUNNER_SECRET).
+ * Aanroepen: gewone GET door het bestaande nightly-serverscript van sleutels.kvt.nl
+ * (zoals bij Demeter, Consus en Horae). logincheck.php laat aanroepen vanaf de server
+ * zelf (is_trusted_requester) zonder login door. Ook mogelijk: CLI `php web/nightly.php`,
+ * of van buitenaf met header X-Sancus-Secret (optioneel, niet nodig voor de serverscript-GET).
  */
 
 ini_set('display_errors', '0');

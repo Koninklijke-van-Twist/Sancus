@@ -28,9 +28,9 @@ De Mímir-fallback in `web/odata.php` (directe BC-route en cache-key) blijft de 
 
 `web/nightly.php` warmt eerst de recent opgezochte contracten op. Daarna haalt het per bedrijf álle contracten met hun lijsttotalen op (klant, verkoper, % afgesloten, ...). Dat gebeurt in bundels van 40 contracten met maximaal 4 Mímir-calls tegelijk en Mímir `max_age` = 4 uur. Het resultaat komt in `web/data/list_summary/all_*.json` (cacheversie `v5`, geldig ±25 uur). Overdag serveren de lijstpagina's uit deze cache. Live ophalen gebeurt alleen als de cache ontbreekt of als je op **Vernieuwen** klikt; dat herschrijft ook de cache. De pagina toont "Gegevens van <datum tijd>".
 
-Plannen (één keer per nacht, bijvoorbeeld 03:30):
+Aanroepen: het bestaande nightly-serverscript van sleutels.kvt.nl vindt `nightly.php`/`hourly.php` automatisch en roept ze aan met een gewone GET, net als bij Demeter, Consus en Horae. Er is geen extra planning, sleutel of header nodig: `logincheck.php` laat aanroepen vanaf de server zelf (`is_trusted_requester`) zonder login door. Beide scripts draaien zonder tijdslimiet (`set_time_limit(0)`) en met `ignore_user_abort(true)`, zodat een afgebroken verbinding de run niet stopt. Handmatig kan het ook:
 
-- CLI (aanbevolen, geen sessie en geen tijdslimiet): `30 3 * * * php /pad/naar/web/nightly.php > /dev/null 2>&1`
-- HTTP: `curl -fsS -H "X-Sancus-Secret: <runner-geheim>" https://<host>/<pad>/nightly.php`. Het geheim staat in `$sancusRunnerSecret` (`auth.php`) of in `SANCUS_RUNNER_SECRET`, en mag nooit als queryparameter worden meegegeven.
+- CLI: `php /pad/naar/web/nightly.php`
+- Van buitenaf (optioneel): GET met header `X-Sancus-Secret: <runner-geheim>` (`$sancusRunnerSecret` in `auth.php` of `SANCUS_RUNNER_SECRET`, nooit als queryparameter).
 
 Zoeken met contract/project, verkoper én klant leeg toont alle contracten. Datum van/tot en het afgesloten-filter blijven gelden. Alle lijstweergaven (alle contracten, verkoper, klant) tonen maximaal 200 contracten per pagina. De Excel-export bevat alle gefilterde rijen. Een contract direct openen (detailweergave) is niet gepagineerd.
