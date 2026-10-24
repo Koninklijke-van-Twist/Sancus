@@ -1502,7 +1502,6 @@ function project_projects_for_closed_card(string $company, string $contractNo, a
         $fromProjecten = project_try_fetch_rows($company, 'Projecten', [
             '$select' => SANCUS_PROJECTEN_STATUS_SELECT,
             '$filter' => "KVT_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
-            'route' => 'tunnel',
         ], $ttl);
     }
 
@@ -1651,7 +1650,6 @@ function project_fetch_contract_nos_for_salesperson(string $company, string $sal
     $rows = project_try_fetch_rows($company, 'Projecten', [
         '$select' => SANCUS_PROJECTEN_BY_SALESPERSON_SELECT,
         '$filter' => "KVT_Sales_Person_Code eq '" . project_escape_odata_string($salespersonCode) . "'",
-        'route' => 'tunnel',
     ], $ttl);
 
     $contractNos = [];
@@ -1997,7 +1995,6 @@ function project_fetch_by_contract_no(string $company, string $contractNo, int $
         '$select' => SANCUS_PROJECT_SELECT,
         '$filter' => "KVT_Contract_No eq '" . $escaped . "'",
         '$orderby' => 'No desc',
-        'route' => 'tunnel',
     ], $ttl);
 
     $projects = [];
@@ -2029,7 +2026,6 @@ function project_fetch_by_no(string $company, string $projectNo, int $ttl = 3600
         '$select' => SANCUS_PROJECT_SELECT,
         '$filter' => "No eq '" . $escaped . "'",
         '$top' => '1',
-        'route' => 'tunnel',
     ], $ttl);
 
     $row = is_array($rows[0] ?? null) ? $rows[0] : null;
@@ -3181,7 +3177,6 @@ function project_fetch_by_nos(string $company, array $jobNos, int $ttl = 3600): 
         $rows = project_try_fetch_rows($company, 'AppProjecten', [
             '$select' => SANCUS_PROJECT_SELECT,
             '$filter' => implode(' or ', $parts),
-            'route' => 'tunnel',
         ], $ttl);
         foreach (project_projects_from_rows($rows) as $project) {
             $found[$project['no']] = $project;
@@ -3484,7 +3479,6 @@ function project_contract_source_plan(
             'query' => [
                 '$select' => SANCUS_PROJECTEN_STATUS_SELECT,
                 '$filter' => "KVT_Contract_No eq '" . project_escape_odata_string($contractNo) . "'",
-                'route' => 'tunnel',
             ],
         ];
     }
@@ -4985,7 +4979,7 @@ function project_contract_summary_rows_batched(string $company, array $contracts
             $calls[$label] = ['kind' => $kind, 'field' => $field, 'entity' => $entity, 'query' => [
                 '$select' => $select,
                 '$filter' => project_odata_or_eq($field, $chunk),
-            ] + (in_array($entity, ['AppProjecten', 'Projecten'], true) ? ['route' => 'tunnel'] : [])];
+            ]];
             $callContracts[$label] = $chunk;
         }
     }
