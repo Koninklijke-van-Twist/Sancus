@@ -111,6 +111,7 @@ function salesperson_build_xlsx(string $title, array $rows, bool $withSalesperso
 {
     $columns = [
         ['label' => LOC('sancus.meta.contract'), 'type' => 'text'],
+        ['label' => LOC('sancus.col.description'), 'type' => 'text'],
         ['label' => LOC('sancus.meta.customer'), 'type' => 'text'],
         ['label' => LOC('sancus.col.customer_no'), 'type' => 'text'],
     ];
@@ -128,7 +129,7 @@ function salesperson_build_xlsx(string $title, array $rows, bool $withSalesperso
     foreach ($rows as $row) {
         $customerName = trim((string) ($row['customer_name'] ?? ''));
         $customerNo = trim((string) ($row['customer_no'] ?? ''));
-        $line = [(string) ($row['contract_no'] ?? ''), $customerName !== '' ? $customerName : $customerNo, $customerNo];
+        $line = [(string) ($row['contract_no'] ?? ''), trim((string) ($row['description'] ?? '')), $customerName !== '' ? $customerName : $customerNo, $customerNo];
         if ($withSalesperson) {
             $line[] = salesperson_person_label(is_array($row['salesperson'] ?? null) ? $row['salesperson'] : []);
         }
@@ -575,6 +576,7 @@ $dataAgeLabel = $dataCachedAt !== null
                         <thead>
                             <tr>
                                 <th><?= portal_h(LOC('sancus.meta.contract')) ?></th>
+                                <th><?= portal_h(LOC('sancus.col.description')) ?></th>
                                 <th><?= portal_h(LOC('sancus.meta.customer')) ?></th>
                                 <th hidden><?= portal_h(LOC('sancus.col.customer_no')) ?></th>
                                 <th<?= $showSalespersonColumn ? '' : ' hidden' ?>><?= portal_h(LOC('sancus.label.salesperson')) ?></th>
@@ -606,6 +608,7 @@ $dataAgeLabel = $dataCachedAt !== null
                                 ?>
                                 <tr class="sancus-click-row">
                                     <td><a class="contract-nav sancus-row-link" href="<?= portal_h($href) ?>"><?= portal_h(portal_display_value($contractNo)) ?></a></td>
+                                    <td><?= portal_h(portal_display_value(trim((string) ($row['description'] ?? '')))) ?></td>
                                     <?php $rowCustomerName = trim((string) ($row['customer_name'] ?? '')); $rowCustomerNo = trim((string) ($row['customer_no'] ?? '')); ?>
                                     <td class="sancus-customer-cell" data-xt="text" data-xv="<?= portal_h($rowCustomerName !== '' ? $rowCustomerName : $rowCustomerNo) ?>"><?= salesperson_customer_cell($row) ?></td>
                                     <td class="sancus-customerno-cell" hidden data-xt="text" data-xv="<?= portal_h($rowCustomerNo) ?>"><?= portal_h($rowCustomerNo) ?></td>
