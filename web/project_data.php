@@ -5574,6 +5574,24 @@ function project_paginate_rows(array $rows, int $page, int $pageSize = SANCUS_LI
  * @param list<array<string,mixed>> $rows
  * @return array{rows:list<array<string,mixed>>,oldest:?int}
  */
+/**
+ * Kopvelden (o.a. omschrijving) van de lijstrij behouden als de rij met totalen ze mist.
+ *
+ * @param array<string,mixed> $withMetrics
+ * @param array<string,mixed> $listRow
+ * @return array<string,mixed>
+ */
+function project_list_row_keep_header_fields(array $withMetrics, array $listRow): array
+{
+    foreach (['starting_date', 'customer_no', 'customer_name', 'description'] as $field) {
+        if (trim((string) ($withMetrics[$field] ?? '')) === '' && trim((string) ($listRow[$field] ?? '')) !== '') {
+            $withMetrics[$field] = $listRow[$field];
+        }
+    }
+
+    return $withMetrics;
+}
+
 function project_list_rows_with_cached_metrics(string $company, array $rows, bool $includeUnbookedCosts, bool $fetchMissing, int $ttl = SANCUS_NIGHTLY_CACHE_TTL): array
 {
     $oldest = null;
@@ -5608,12 +5626,7 @@ function project_list_rows_with_cached_metrics(string $company, array $rows, boo
         if ($at !== null) {
             $oldest = $oldest === null ? $at : min($oldest, $at);
         }
-        foreach (['starting_date', 'customer_no', 'customer_name'] as $field) {
-            if (trim((string) ($cached[$field] ?? '')) === '' && trim((string) ($row[$field] ?? '')) !== '') {
-                $cached[$field] = $row[$field];
-            }
-        }
-        $rows[$index] = $cached;
+        $rows[$index] = project_list_row_keep_header_fields($cached, $row);
     }
     if ($fetchMissing && $missing !== []) {
         foreach (array_chunk($missing, max(1, SANCUS_LIST_SUMMARY_GROUP), true) as $chunk) {
@@ -5627,7 +5640,7 @@ function project_list_rows_with_cached_metrics(string $company, array $rows, boo
             foreach ($chunk as $index => $row) {
                 $key = project_normalize_match_text((string) ($row['contract_no'] ?? ''));
                 if (isset($byKey[$key])) {
-                    $rows[$index] = $byKey[$key];
+                    $rows[$index] = project_list_row_keep_header_fields($byKey[$key], $row);
                 }
             }
         }
