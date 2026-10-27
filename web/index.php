@@ -381,6 +381,15 @@ try {
             $customerNo = (string) ($overview['customer_no'] ?? '');
             $contractValue = array_key_exists('contract_value', $overview) ? $overview['contract_value'] : null;
             $contractNo = (string) ($overview['contract_no'] ?? '');
+            $contractDescription = '';
+            if ($contractNo !== '') {
+                try {
+                    $contractHeader = project_fetch_contract_headers_by_nos($company, [$contractNo], SANCUS_NIGHTLY_CACHE_TTL)[project_normalize_match_text($contractNo)] ?? null;
+                    $contractDescription = is_array($contractHeader) ? trim((string) ($contractHeader['description'] ?? '')) : '';
+                } catch (Throwable $e) {
+                    $contractDescription = '';
+                }
+            }
             $cachedAtRaw = (int) ($overview['data_cached_at'] ?? 0);
             $dataCachedAt = $cachedAtRaw > 0 ? $cachedAtRaw : null;
             if ($focusProject === '') {
@@ -1007,6 +1016,10 @@ $searchFieldValue = $searchQuery !== '' ? $searchQuery : $contractNo;
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.contract')) ?></span>
                     <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractNo !== '' ? $contractNo : $searchQuery)) ?></span>
                     <span class="sancus-kpi-sub"><?= portal_h((string) $projectCount) ?> <?= portal_h(LOC('sancus.meta.projects_count')) ?></span>
+                </div>
+                <div class="sancus-kpi">
+                    <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.col.description')) ?></span>
+                    <span class="sancus-kpi-value"><?= portal_h(portal_display_value($contractDescription ?? '')) ?></span>
                 </div>
                 <div class="sancus-kpi">
                     <span class="sancus-kpi-label"><?= portal_h(LOC('sancus.meta.customer')) ?></span>

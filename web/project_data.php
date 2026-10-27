@@ -5317,7 +5317,8 @@ function project_fill_contract_list_headers(string $company, array $rows, int $t
     $missing = [];
     foreach ($rows as $row) {
         // Klantnaam volgt uit de totalen (projecten); alleen zonder klant of startdatum de kop ophalen
-        if (trim((string) ($row['customer_no'] ?? '')) === '' || trim((string) ($row['starting_date'] ?? '')) === '') {
+        // Omschrijving (contractnaam) komt alleen uit de kop: één batch-call voor alle rijen zonder omschrijving
+        if (trim((string) ($row['customer_no'] ?? '')) === '' || trim((string) ($row['starting_date'] ?? '')) === '' || !isset($row['description'])) {
             $missing[] = (string) ($row['contract_no'] ?? '');
         }
     }
@@ -5330,7 +5331,7 @@ function project_fill_contract_list_headers(string $company, array $rows, int $t
         if (!is_array($header)) {
             continue;
         }
-        foreach (['customer_no', 'customer_name', 'starting_date'] as $field) {
+        foreach (['customer_no', 'customer_name', 'starting_date', 'description'] as $field) {
             if (trim((string) ($row[$field] ?? '')) === '') {
                 $rows[$index][$field] = (string) ($header[$field] ?? '');
             }
