@@ -251,16 +251,14 @@ function batch_test_expected_filter(array $jobs, string $dateField, string $extr
 
     $terms = [];
     foreach ($sorted as $job) {
-        $predicates = ["Job_No eq '" . project_escape_odata_string($job) . "'"];
-        if ($extra !== '') {
-            $predicates[] = $extra;
-        }
-        $predicates[] = $dateField . ' ge 2026-01-01';
-        $predicates[] = $dateField . ' le 2026-06-30';
-        $terms[] = '(' . implode(' and ', $predicates) . ')';
+        $terms[] = "Job_No eq '" . project_escape_odata_string($job) . "'";
+    }
+    $base = '(' . implode(' or ', $terms) . ')';
+    if ($extra !== '') {
+        $base .= ' and ' . $extra;
     }
 
-    return '(' . implode(' or ', $terms) . ')';
+    return project_append_date_range_filter($base, $dateField, '2026-01-01', '2026-06-30');
 }
 
 /**
@@ -341,21 +339,21 @@ function batch_test_assert_entity_calls(
         $dateCount = substr_count($parsed['filter'], $dateField . ' ge 2026-01-01');
         test_assert(
             $label . ' datumclausule',
-            $dateCount === count($jobs)
-                && substr_count($parsed['filter'], $dateField . ' le 2026-06-30') === count($jobs),
+            $dateCount === 1
+                && substr_count($parsed['filter'], $dateField . ' le 2026-06-30') === 1,
             $parsed['filter']
         );
         if ($extra !== '') {
             test_assert(
                 $label . ' extra clausule',
-                substr_count($parsed['filter'], $extra) === count($jobs),
+                substr_count($parsed['filter'], $extra) === 1,
                 $parsed['filter']
             );
         }
         if (count($jobs) > 1) {
             test_assert(
                 $label . ' or-groep tussen haakjes',
-                str_starts_with($parsed['filter'], '((') && str_ends_with($parsed['filter'], '))'),
+                str_starts_with($parsed['filter'], '(Job_No eq ') && !str_contains($parsed['filter'], ') or ('),
                 $parsed['filter']
             );
         } else {
