@@ -2060,11 +2060,11 @@ function project_unique_job_nos(array $jobNos): array
 }
 
 /**
- * Bundelfilter waarbij élke Job_No zijn eigen extra- en datumpredikaten draagt.
+ * Bundelfilter: (Job_No eq A or Job_No eq B) and <extra> and <datum>.
  *
- * `(A or B or C) and Qty ne 0` verliest de qty-eis voor A en B zodra de
- * buitenste haakjes wegvallen: AND bindt sterker dan OR. Daarom staat de
- * extra clausule (en het datumbereik) in elke term.
+ * De OR staat tussen eigen haakjes, zodat de extra clausule voor élk project
+ * geldt. Geen OR van AND-groepen per project: BC weigert dat met HTTP 501
+ * ("De OData-filterexpressie wordt niet ondersteund").
  *
  * @param list<string> $jobNos
  */
@@ -2087,33 +2087,25 @@ function project_job_chunk_filter(
     $terms = [];
     foreach ($sorted as $jobNo) {
         $escaped = project_escape_odata_string($jobNo);
-        if ($escaped === '') {
-            continue;
+        if ($escaped !== '') {
+            $terms[] = "Job_No eq '" . $escaped . "'";
         }
-        $predicates = ["Job_No eq '" . $escaped . "'"];
-        if ($extraFilter !== '') {
-            $predicates[] = $extraFilter;
-        }
-        if ($dateFrom !== '') {
-            $predicates[] = $dateField . ' ge ' . $dateFrom;
-        }
-        if ($dateTo !== '') {
-            $predicates[] = $dateField . ' le ' . $dateTo;
-        }
-        $term = implode(' and ', $predicates);
-        if (count($predicates) > 1) {
-            $term = '(' . $term . ')';
-        }
-        $terms[] = $term;
     }
     if ($terms === []) {
         return '';
     }
-    if (count($terms) === 1) {
-        return $terms[0];
+    $predicates = [count($terms) === 1 ? $terms[0] : '(' . implode(' or ', $terms) . ')'];
+    if ($extraFilter !== '') {
+        $predicates[] = $extraFilter;
+    }
+    if ($dateFrom !== '') {
+        $predicates[] = $dateField . ' ge ' . $dateFrom;
+    }
+    if ($dateTo !== '') {
+        $predicates[] = $dateField . ' le ' . $dateTo;
     }
 
-    return '(' . implode(' or ', $terms) . ')';
+    return implode(' and ', $predicates);
 }
 
 /**

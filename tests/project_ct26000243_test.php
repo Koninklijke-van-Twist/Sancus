@@ -72,6 +72,10 @@ function ct_lossy_atom(string $atom, array $row): bool
 
 function ct_lossy_match(string $filter, array $row): bool
 {
+    // Echte haakjes zoals BC: (A or B) and C
+    if (preg_match('/^\(([^()]+)\) and ([^()]+)$/', trim($filter), $group) === 1) {
+        return ct_lossy_match($group[1], $row) && ct_lossy_match($group[2], $row);
+    }
     $filter = str_replace(['(', ')'], '', $filter);
     $normalized = preg_replace('/\s+/', ' ', trim($filter));
     $filter = is_string($normalized) ? $normalized : trim($filter);
@@ -317,11 +321,6 @@ $company = 'Koninklijke van Twist';
 $unsafe = "(Job_No eq 'PRJ2606361' or Job_No eq 'PRJ2606373') and Qty_to_Transfer_to_Journal ne 0";
 $qtyZero = ['Job_No' => 'PRJ2606361', 'Qty_to_Transfer_to_Journal' => 0];
 $qtySome = ['Job_No' => 'PRJ2606361', 'Qty_to_Transfer_to_Journal' => 2];
-test_assert('oude planningsfilter laat qty 0 door zonder haakjes', ct_lossy_match($unsafe, $qtyZero));
-test_assert('oude planningsfilter houdt het laatste project wel tegen', !ct_lossy_match(
-    $unsafe,
-    ['Job_No' => 'PRJ2606373', 'Qty_to_Transfer_to_Journal' => 0]
-));
 $safe = project_job_chunk_filter(
     ['PRJ2606361', 'PRJ2606373'],
     'Qty_to_Transfer_to_Journal ne 0',
@@ -329,8 +328,8 @@ $safe = project_job_chunk_filter(
     '',
     ''
 );
-test_assert('nieuwe planningsfilter houdt qty 0 tegen', !ct_lossy_match($safe, $qtyZero), $safe);
-test_assert('nieuwe planningsfilter houdt qty <> 0', ct_lossy_match($safe, $qtySome), $safe);
+// BC respecteert de haakjes (live gecontroleerd); OR van AND-groepen geeft juist HTTP 501.
+test_assert('nieuwe planningsfilter: or-groep tussen haakjes, qty-eis erbuiten', $safe === "(Job_No eq 'PRJ2606361' or Job_No eq 'PRJ2606373') and Qty_to_Transfer_to_Journal ne 0", $safe);
 
 function ct_log_rows(): array
 {
@@ -373,7 +372,7 @@ foreach (ct_log_rows() as $entry) {
 test_assert('planning is één bundel', $planningPosts === 1, (string) $planningPosts);
 test_assert(
     'verstuurde planningsfilter is haakjes-veilig',
-    $planningFilter !== '' && !ct_lossy_match($planningFilter, $qtyZero) && ct_lossy_match($planningFilter, $qtySome),
+    str_starts_with($planningFilter, '(Job_No eq ') && str_ends_with($planningFilter, ') and Qty_to_Transfer_to_Journal ne 0') && !str_contains($planningFilter, ') or ('),
     $planningFilter
 );
 
