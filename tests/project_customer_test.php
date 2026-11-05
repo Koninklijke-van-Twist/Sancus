@@ -117,6 +117,24 @@ $GLOBALS['SANCUS_ODATA_BC_FETCH'] = static function (string $url) use (&$calls):
                 'Starting_Date' => '2021-08-09',
             ]];
         }
+        if (str_contains($decoded, "Customer_No eq '8801'")) {
+            return [['Customer_No' => '8801', 'Name' => 'Alleen nummer']];
+        }
+        if (str_contains($decoded, "contains(Name,'8801')")) {
+            return [['Customer_No' => '7700', 'Name' => 'Locatie 8801']];
+        }
+        if (str_contains($decoded, "Customer_No eq 'Dubbel'")) {
+            return [
+                ['Customer_No' => '42', 'Name' => 'Dubbel BV'],
+                ['Customer_No' => '44', 'Name' => 'Dubbel Noord'],
+            ];
+        }
+        if (str_contains($decoded, "contains(Name,'Dubbel')")) {
+            return [
+                ['Customer_No' => '42', 'Name' => ''],
+                ['Customer_No' => '43', 'Name' => 'Dubbel Zuid'],
+            ];
+        }
 
         return [];
     }
@@ -154,6 +172,35 @@ function test_assert(string $name, bool $condition, string $detail = ''): void
     echo "FAIL {$name}" . ($detail !== '' ? " — {$detail}" : '') . "\n";
 }
 
+/** OR buiten quotes over twee verschillende velden. BC antwoordt daarop met HTTP 501. */
+function test_filter_ors_different_fields(string $url): bool
+{
+    if (preg_match('/(?:^|[?&])\$filter=([^&]*)/', $url, $match) !== 1) {
+        return false;
+    }
+    $filter = rawurldecode($match[1]);
+    $bare = preg_replace("/'(?:[^']|'')*'/", "''", $filter);
+    if (!is_string($bare) || preg_match('/\bor\b/i', $bare) !== 1) {
+        return false;
+    }
+    preg_match_all('/contains\(\s*([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)\s+eq\b/', $bare, $found);
+    $fields = [];
+    foreach (array_merge($found[1], $found[2]) as $field) {
+        if ($field !== '') {
+            $fields[$field] = true;
+        }
+    }
+
+    return count($fields) > 1;
+}
+
+function test_assert_no_cross_field_or(string $name, array $urls): void
+{
+    foreach ($urls as $url) {
+        test_assert($name, !test_filter_ors_different_fields($url), $url);
+    }
+}
+
 $exact = project_match_customers([
     ['no' => '10268', 'name' => 'Engie Services'],
     ['no' => '555', 'name' => 'Locatie 10268'],
@@ -170,17 +217,28 @@ test_assert(
     json_encode($byName)
 );
 test_assert(
-    'klantfilter is nummer of contains op naam',
-    project_customer_odata_filter('Vitens') === "Customer_No eq 'Vitens' or contains(Name,'Vitens')"
+    'klantfilter is nummer en contains op naam, los',
+    project_customer_odata_filters('Vitens') === ["Customer_No eq 'Vitens'", "contains(Name,'Vitens')"]
 );
 test_assert(
     'quote in de klantnaam wordt geëscaped',
-    project_customer_odata_filter("O'Brien") === "Customer_No eq 'O''Brien' or contains(Name,'O''Brien')"
+    project_customer_odata_filters("O'Brien") === ["Customer_No eq 'O''Brien'", "contains(Name,'O''Brien')"]
 );
-test_assert('CT is geen klantfilter', project_customer_odata_filter('CT26000184') === '');
-test_assert('PRJ is geen klantfilter', project_customer_odata_filter('PRJ2602980') === '');
-test_assert('plak is geen klantfilter', project_customer_odata_filter("Nr.\tOmschrijving") === '');
-test_assert('één teken is geen klantfilter', project_customer_odata_filter('a') === '');
+test_assert('CT is geen klantfilter', project_customer_odata_filters('CT26000184') === []);
+test_assert('PRJ is geen klantfilter', project_customer_odata_filters('PRJ2602980') === []);
+test_assert('plak is geen klantfilter', project_customer_odata_filters("Nr.\tOmschrijving") === []);
+test_assert('één teken is geen klantfilter', project_customer_odata_filters('a') === []);
+foreach (project_customer_odata_filters('Vitens') as $customerFilter) {
+    test_assert('gebouwd klantfilter heeft geen OR', preg_match('/\bor\b/i', $customerFilter) !== 1, $customerFilter);
+}
+test_assert(
+    'detector ziet OR over Customer_No en Name',
+    test_filter_ors_different_fields("https://bc.example/AppMaintenanceContracts?\$filter=Customer_No%20eq%20'Vitens'%20or%20contains(Name,'Vitens')")
+);
+test_assert(
+    'detector laat OR op hetzelfde veld door',
+    !test_filter_ors_different_fields("https://bc.example/AppMaintenanceContracts?\$filter=(Customer_No%20eq%20'10268'%20or%20Customer_No%20eq%20'99999')")
+);
 
 $company = 'Koninklijke van Twist';
 $calls = [];
@@ -275,6 +333,11 @@ test_assert(
     json_encode($many)
 );
 test_assert('naamzoektocht blijft op onderhoudscontracten', str_contains(implode("\n", $calls), 'AppProjecten') === false);
+$engieCalls = array_values(array_filter($calls, static function (string $url): bool {
+    return str_contains($url, 'AppMaintenanceContracts');
+}));
+test_assert('naamzoeken doet nummer- en naamquery', count($engieCalls) === 2, (string) count($engieCalls));
+test_assert_no_cross_field_or('naamzoeken zonder OR over velden', $engieCalls);
 
 $calls = [];
 $byNumber = project_load_run_step('', 'init', [
@@ -288,6 +351,88 @@ test_assert(
     json_encode($byNumber)
 );
 test_assert('klantnummer zoekt geen dimensie tot de klantpagina', str_contains(implode("\n", $calls), 'DefaultDimensions') === false);
+$numberSearchCalls = array_values(array_filter($calls, static function (string $url): bool {
+    return str_contains($url, 'AppMaintenanceContracts') && (str_contains($url, "Customer_No eq '10268'") || str_contains($url, "contains(Name,'10268')"));
+}));
+test_assert('klantnummer doet nummer- en naamquery', count($numberSearchCalls) === 2, (string) count($numberSearchCalls));
+test_assert_no_cross_field_or('klantnummer zoeken zonder OR over velden', $numberSearchCalls);
+
+$calls = [];
+$numberOnly = project_find_customers($company, '8801', 60, 8);
+$numberOnlyCalls = array_values(array_filter($calls, static function (string $url): bool {
+    return str_contains($url, 'AppMaintenanceContracts');
+}));
+test_assert('nummer en naam zijn twee calls', count($numberOnlyCalls) === 2, (string) count($numberOnlyCalls));
+test_assert(
+    'nummer-call is alleen Customer_No eq',
+    str_contains($numberOnlyCalls[0] ?? '', "Customer_No eq '8801'") && str_contains($numberOnlyCalls[0] ?? '', 'contains(') === false,
+    $numberOnlyCalls[0] ?? ''
+);
+test_assert(
+    'naam-call is alleen contains(Name)',
+    str_contains($numberOnlyCalls[1] ?? '', "contains(Name,'8801')") && str_contains($numberOnlyCalls[1] ?? '', 'Customer_No eq') === false,
+    $numberOnlyCalls[1] ?? ''
+);
+test_assert_no_cross_field_or('8801-zoekfilters zonder OR over velden', $numberOnlyCalls);
+test_assert(
+    'exact klantnummer wint van een naam-deel',
+    count($numberOnly) === 1 && ($numberOnly[0]['no'] ?? '') === '8801' && ($numberOnly[0]['name'] ?? '') === 'Alleen nummer',
+    json_encode($numberOnly)
+);
+
+$calls = [];
+$merged = project_find_customers($company, 'Dubbel', 60, 8);
+$mergedNos = array_map(static function (array $row): string {
+    return (string) ($row['no'] ?? '');
+}, $merged);
+test_assert('nummer- en naamquery samengevoegd en ontdubbeld', $mergedNos === ['42', '44', '43'], json_encode($merged));
+test_assert(
+    'lege naam uit de naamquery wordt aangevuld vanuit de nummerquery',
+    ($merged[0]['name'] ?? '') === 'Dubbel BV',
+    json_encode($merged)
+);
+test_assert_no_cross_field_or('samengevoegde zoekfilters zonder OR over velden', $calls);
+
+$savedFetch = $GLOBALS['SANCUS_ODATA_BC_FETCH'];
+$mimirApi = 'mimir_customer_test';
+unset($GLOBALS['SANCUS_ODATA_BC_FETCH']);
+$parallelFilters = [];
+$GLOBALS['SANCUS_MIMIR_QUERY_MANY'] = static function (array $wave) use (&$parallelFilters): array {
+    $lists = [];
+    foreach ($wave as $call) {
+        $query = is_array($call['query'] ?? null) ? $call['query'] : [];
+        $filter = (string) ($query['$filter'] ?? '');
+        $parallelFilters[] = $filter;
+        if ($filter === "Customer_No eq '8801'") {
+            $lists[] = [['Customer_No' => '8801', 'Name' => 'Alleen nummer']];
+            continue;
+        }
+        if ($filter === "contains(Name,'8801')") {
+            $lists[] = [['Customer_No' => '7700', 'Name' => 'Locatie 8801']];
+            continue;
+        }
+        $lists[] = [];
+    }
+
+    return $lists;
+};
+$parallelFound = project_find_customers($company, '8801', 60, 8);
+test_assert(
+    'parallel: nummer en naam in één golf',
+    $parallelFilters === ["Customer_No eq '8801'", "contains(Name,'8801')"],
+    json_encode($parallelFilters)
+);
+test_assert(
+    'parallel: zelfde treffer als achter elkaar',
+    count($parallelFound) === 1 && ($parallelFound[0]['no'] ?? '') === '8801',
+    json_encode($parallelFound)
+);
+test_assert_no_cross_field_or('parallel zoekfilters zonder OR over velden', array_map(static function (string $filter): string {
+    return 'https://bc.example/x?$filter=' . rawurlencode($filter);
+}, $parallelFilters));
+$mimirApi = '';
+unset($GLOBALS['SANCUS_MIMIR_QUERY_MANY']);
+$GLOBALS['SANCUS_ODATA_BC_FETCH'] = $savedFetch;
 
 $calls = [];
 $salesperson = project_load_run_step('', 'init', [

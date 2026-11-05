@@ -1001,26 +1001,32 @@ function project_fetch_contracts_by_customer_nos(string $company, array $custome
 }
 
 /**
- * Klantzoektocht op AppMaintenanceContracts.
- * Customer_No eq of contains(Name, …). Leeg bij een contract-/projectnummer of een plak.
+ * Klantzoektocht op AppMaintenanceContracts: Customer_No eq en contains(Name), los.
+ * BC weigert OR over die twee velden (HTTP 501, operator OF op afzonderlijke velden).
+ * Leeg bij een contract-/projectnummer of een plak.
+ *
+ * @return list<string>
  */
-function project_customer_odata_filter(string $query): string
+function project_customer_odata_filters(string $query): array
 {
     $query = trim($query);
     if ($query === '' || project_input_is_blob($query) || project_query_is_contract_or_project_number($query)) {
-        return '';
+        return [];
     }
     $length = function_exists('mb_strlen') ? mb_strlen($query) : strlen($query);
     if ($length < 2 || $length > 100) {
-        return '';
+        return [];
     }
 
     $escaped = project_escape_odata_string($query);
     if ($escaped === '') {
-        return '';
+        return [];
     }
 
-    return "Customer_No eq '" . $escaped . "' or contains(Name,'" . $escaped . "')";
+    return [
+        "Customer_No eq '" . $escaped . "'",
+        "contains(Name,'" . $escaped . "')",
+    ];
 }
 
 /**
@@ -1116,21 +1122,46 @@ function project_match_customers(array $customers, string $query, int $limit = 8
 }
 
 /**
+ * Klant op nummer en op naamdeel. Twee calls: BC ondersteunt geen OR over die velden.
+ * Met Mímir tegelijk; anders achter elkaar. Zelfde klant uit beide calls telt één keer.
+ *
  * @return list<array{no:string,name:string}>
  */
 function project_find_customers(string $company, string $query, int $ttl = 3600, int $limit = 8): array
 {
-    $filter = project_customer_odata_filter($query);
-    if ($filter === '') {
+    $filters = project_customer_odata_filters($query);
+    if ($filters === []) {
         return [];
     }
 
-    $rows = project_fetch_rows($company, 'AppMaintenanceContracts', [
-        '$select' => SANCUS_CUSTOMER_MATCH_SELECT,
-        '$filter' => $filter,
-    ], $ttl);
+    $calls = [];
+    foreach ($filters as $index => $filter) {
+        $calls['customers_' . $index] = [
+            'entity' => 'AppMaintenanceContracts',
+            'query' => [
+                '$select' => SANCUS_CUSTOMER_MATCH_SELECT,
+                '$filter' => $filter,
+            ],
+        ];
+    }
 
-    return project_match_customers(project_customers_from_contract_rows($rows), $query, $limit);
+    $rawRows = [];
+    $parallel = project_fetch_rows_parallel($company, $calls, $ttl);
+    if (is_array($parallel)) {
+        foreach (array_keys($calls) as $label) {
+            foreach ($parallel[$label] ?? [] as $row) {
+                $rawRows[] = $row;
+            }
+        }
+    } else {
+        foreach ($calls as $call) {
+            foreach (project_fetch_rows($company, $call['entity'], $call['query'], $ttl) as $row) {
+                $rawRows[] = $row;
+            }
+        }
+    }
+
+    return project_match_customers(project_customers_from_contract_rows($rawRows), $query, $limit);
 }
 
 /**
